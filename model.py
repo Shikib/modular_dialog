@@ -111,7 +111,6 @@ class Model(nn.Module):
     decoder_hidden = self.policy(encoder_hidden, db, bs)
 
     # Decoder
-    probas = torch.zeros(target_seq.size(0), target_seq.size(1), len(self.output_i2w)).cuda()
     last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(target_seq.size(1))]])
     for t in range(target_seq.size(0)):
       # Pass through decoder
@@ -141,8 +140,45 @@ class Model(nn.Module):
 
     return loss.item()
 
-  def decode(self):
-    print("TODO")
+  def decode(self, input_seq, input_lens, target_seq, target_lens, db, bs):
+
+    batch_size = target_seq.size(1)
+    predictions = torch.zeros((batch_size, target_seq.size(0)))
+
+    with torch.no_grad():
+      # Encoder
+      encoder_outputs, encoder_hidden = self.encoder(input_seq, input_lens)
+
+      # Policy network
+      decoder_hidden = self.policy(encoder_hidden, db, bs)
+
+      # Decoder
+      last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(target_seq.size(1))]])
+      for t in range(target_seq.size(0)):
+        # Pass through decoder
+        decoder_output, decoder_hidden = self.decoder(decoder_hidden, last_word)
+
+        # Get top candidates
+        topv, topi = decoder_out.data.topk(1)
+        topi = topi.view(-1)
+
+        predictions[:, t] = topi
+
+        # Set new last word
+        last_word = topi.detach().view(-1, 1)
+
+    predicted_sentences = []
+    for sentence in predictions:
+      sent = []
+      for ind in sentence:
+          word = self.output_index2word(str(int(ind.item())))
+          if word == '_EOS':
+              break
+          sent.append(word)
+      predicted_sentences.append(' '.join(sent))
+
+    return predicted_sentences
+
 
   def save(self, name):
     torch.save(self.encoder, name+'.enc')

@@ -81,19 +81,56 @@ model = model.Model(encoder=encoder,
                     output_w2i=output_w2i,
                     args=args).cuda()
 
-# Load saved model parameters
-model.load(args.model_name)
-
 # Load data
 train = load_data('data/train_dials.json')
 valid = load_data('data/val_dials.json')
 test = load_data('data/test_dials.json')
 
-num_batches = math.ceil(len(test)/args.batch_size)
+val_targets = json.load(open('data/val_dials.json'))
+test_targets = json.load(open('data/test_dials.json'))
+
+num_val_batches = math.ceil(len(valid)/args.batch_size)
+num_test_batches = math.ceil(len(test)/args.batch_size)
+
 indices = list(range(len(test)))
 
+model_name = 'attn'
+
+best_val_score = 0.0
+best_val_epoch = -1
+
+for epoch in range(20):
+  # Load saved model parameters
+  model.load(model_name+"_"+str(epoch))
+  all_predicted = defaultdict(list)
+  for batch in range(num_val_batches):
+    # Prepare batch
+    batch_indices = indices[batch*args.batch_size:(batch+1)*args.batch_size]
+    batch_rows = [valid[i] for i in batch_indices]
+    input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
+
+    # Get predicted sentences for batch
+    predicted_sentences = model.decode(input_seq, input_lens, target_seq, target_lens, db, bs)
+
+    # Add predicted to list
+    for i,sent in enumerate(predicted_sentences):
+      all_predicted[batch_rows[i][-2]].append(sent) 
+
+  val_score = evaluateModel(all_predicted, val_targets, mode='val')
+  print("Epoch {0}: Validation Score {1:.10f}".format(epoch, val_score))
+  print("-----------------------------------")
+
+  if val_score > best_val_score:
+    best_val_score = val_score
+    best_val_epoch = epoch
+
+print("Best validation score after epoch {0}".format(best_val_epoch))
+
+# Evaluate best val model on test data
+model.load(model_name+"_"+str(best_val_epoch))
+
 all_predicted = defaultdict(list)
-for batch in range(num_batches):
+for batch in range(num_test_batches):
   # Prepare batch
   batch_indices = indices[batch*args.batch_size:(batch+1)*args.batch_size]
   batch_rows = [test[i] for i in batch_indices]
@@ -106,4 +143,5 @@ for batch in range(num_batches):
   for i,sent in enumerate(predicted_sentences):
     all_predicted[batch_rows[i][-2]].append(sent) 
 
-json.dump(all_predicted, open('{0}_predictions.json'.format(args.model_name), 'w+'))
+test_score = evaluateModel(all_predicted, test_targets, mode='test')
+print("Test score: {0}".format(test_score))

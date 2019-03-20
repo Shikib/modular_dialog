@@ -161,9 +161,9 @@ class Model(nn.Module):
 
     return loss.item()
 
-  def decode(self, input_seq, input_lens, target_seq, target_lens, db, bs):
-    batch_size = target_seq.size(1)
-    predictions = torch.zeros((batch_size, target_seq.size(0)))
+  def decode(self, input_seq, input_lens, max_len, db, bs):
+    batch_size = input_seq.size(1)
+    predictions = torch.zeros((batch_size, max_len))
 
     with torch.no_grad():
       # Encoder
@@ -173,8 +173,8 @@ class Model(nn.Module):
       decoder_hidden = self.policy(encoder_hidden, db, bs)
 
       # Decoder
-      last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(target_seq.size(1))]])
-      for t in range(target_seq.size(0)):
+      last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(input_seq.size(1))]])
+      for t in range(max_len):
         # Pass through decoder
         decoder_output, decoder_hidden = self.decoder(decoder_hidden, last_word, encoder_outputs)
 
@@ -199,7 +199,66 @@ class Model(nn.Module):
 
     return predicted_sentences
 
+  def beam_decode(self, input_seq, input_lens, max_len, db, bs, beam_width=10):
+    def _to_cpu(x):
+      if type(x) in [tuple, list]:
+        return [e.cpu() for e in x]
+      else:
+        return x.cpu()
 
+    def _to_cuda(x):
+      if type(x) in [tuple, list]:
+        return [e.cuda() for e in x]
+      else:
+        return x.cuda()
+
+    def _score(hyp):
+      return hyp[2]/float(hyp[3] + 1e-6) 
+
+    # Beam is (hid_cpu, input_word, log_p, length, seq_so_far)
+    with torch.no_grad():
+      # Batch size must be 1
+      assert input_seq.size(1) == 1
+
+      # Encoder
+      encoder_outputs, encoder_hidden = self.encoder(input_seq, input_lens)
+
+      # Policy network
+      decoder_hidden = self.policy(encoder_hidden, db, bs)
+
+      # Decoder
+      last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(input_seq.size(1))]])
+      beam = [(_to_cpu(decoder_hidden), _to_cpu(last_word), 0, 0, "")]
+      for _ in range(max_len):
+        new_beam = []
+        for hyp in beam:
+          # Continue _EOS
+          if hyp[-1].endswith('_EOS'):
+            new_beam.append(hyp)
+            continue
+          
+          # Propagate through decoder
+          decoder_output, decoder_hidden = self.decoder(_to_cuda(hyp[0]), _to_cuda(hyp[1]), encoder_outputs)
+
+          # Get top candidates and add new hypotheses
+          topv, topi = decoder_output.data.topk(beam_width)
+          topv = topv.squeeze()
+          topi = topi.squeeze()
+          for i in range(beam_width):
+            last_word = topi[i].detach().view(1, -1)
+            new_hyp = (_to_cpu(decoder_hidden), 
+                       _to_cpu(last_word), 
+                       hyp[2] + topv[i], 
+                       hyp[3] + 1, 
+                       hyp[4] + " " + self.output_i2w[topi[i].long().item()])
+
+            new_beam.append(new_hyp)
+
+        # Translate new beam into beam
+        beam = sorted(new_beam, key=_score, reverse=True)[:beam_width]
+
+      return [max([hyp for hyp in beam if hyp[-1].endswith('_EOS')], key=_score)[-1].replace("_EOS", "").strip()]
+          
   def save(self, name):
     torch.save(self.encoder, name+'.enc')
     torch.save(self.policy, name+'.pol')

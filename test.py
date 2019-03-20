@@ -94,13 +94,16 @@ indices = list(range(len(test)))
 
 all_predicted = defaultdict(list)
 for batch in range(num_batches):
+  if batch % 50 == 0:
+    print("Batch {0}/{1}".format(batch, num_batches))
   # Prepare batch
   batch_indices = indices[batch*args.batch_size:(batch+1)*args.batch_size]
   batch_rows = [test[i] for i in batch_indices]
   input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
 
   # Get predicted sentences for batch
-  predicted_sentences = model.decode(input_seq, input_lens, target_seq, target_lens, db, bs)
+  #predicted_sentences = model.decode(input_seq, input_lens, 50, db, bs)
+  predicted_sentences = model.beam_decode(input_seq, input_lens, 50, db, bs)
 
   # Add predicted to list
   for i,sent in enumerate(predicted_sentences):

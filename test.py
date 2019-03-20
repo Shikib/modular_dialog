@@ -79,16 +79,17 @@ model = model.Model(encoder=encoder,
                     args=args).cuda()
 
 # Load saved model parameters
-model.load(model_name)
+model.load(args.model_name)
 
 # Load data
 train = load_data('data/train_dials.json')
 valid = load_data('data/val_dials.json')
 test = load_data('data/test_dials.json')
 
-predict_file = open('predicted_sentences.txt', 'w')
-target_file = open('target_sentences.txt', 'w')
-
+predict_file = open('{0}_predicted_sentences.txt'.format(args.model_name), 'w')
+target_file = open('{0}_target_sentences.txt'.format(args.model_name), 'w')
+num_batches = math.ceil(len(test)/args.batch_size)
+indices = list(range(len(test)))
 for batch in range(num_batches):
   # Prepare batch
   batch_indices = indices[batch*args.batch_size:(batch+1)*args.batch_size]
@@ -98,7 +99,7 @@ for batch in range(num_batches):
   # Get predicted sentences for batch
   predicted_sentences = model.decode(input_seq, input_lens, target_seq, target_lens, db, bs)
 
-  target_sentences = [''.join(row[1][1:-1]) for row in batch_rows]
+  target_sentences = [' '.join(row[1][1:-1]) for row in batch_rows]
 
   # Write predicted and target sentences to output file
   for p, t in zip(predicted_sentences, target_sentences):

@@ -50,16 +50,36 @@ class Decoder(nn.Module):
   def __init__(self, emb_size, hid_size, vocab_size, use_attn=True):
     super(Decoder, self).__init__()
     self.embedding = nn.Embedding(vocab_size, emb_size)
-    self.decoder = nn.LSTM(emb_size, hid_size)
     self.out = nn.Linear(hid_size, vocab_size)
     self.use_attn = use_attn
     if use_attn:
-      print("ERROR: NO ATTN")
+      self.decoder = nn.LSTM(emb_size+hid_size, hid_size)
+      self.W_a = nn.Linear(hid_size * 2, hid_size)
+      self.v = nn.Linear(hid_size, 1)
+    else:
+      self.decoder = nn.LSTM(emb_size, hid_size)
 
-  def forward(self, hidden, last_word):
-    embedded = self.embedding(last_word)
-    output, hidden = self.decoder(embedded, hidden)
-    return F.log_softmax(self.out(output), dim=2), hidden
+  def forward(self, hidden, last_word, encoder_outputs):
+    if not self.use_attn:
+      embedded = self.embedding(last_word)
+      output, hidden = self.decoder(embedded, hidden)
+      return F.log_softmax(self.out(output), dim=2), hidden
+    else:
+      embedded = self.embedding(last_word)
+
+      # Attn
+      h = hidden[0].repeat(encoder_outputs.size(0), 1, 1)
+      attn_energy = F.tanh(self.W_a(torch.cat((h, encoder_outputs), dim=2)))
+      attn_logits = self.v(attn_energy).squeeze() - 1e5 * (encoder_outputs.sum(dim=2) == 0).float()
+      attn_weights = F.softmax(attn_logits, dim=0).permute(1,0).unsqueeze(1)
+      context_vec = attn_weights.bmm(encoder_outputs.permute(1,0,2)).permute(1,0,2)
+
+      # Concat with embeddings
+      rnn_input = torch.cat((context_vec, embedded), dim=2)
+
+      # Forward
+      output, hidden = self.decoder(rnn_input, hidden)
+      return F.log_softmax(self.out(output), dim=2), hidden
 
 
 class Model(nn.Module):
@@ -115,7 +135,7 @@ class Model(nn.Module):
     last_word = target_seq[0].unsqueeze(0)
     for t in range(1,target_seq.size(0)):
       # Pass through decoder
-      decoder_output, decoder_hidden = self.decoder(decoder_hidden, last_word)
+      decoder_output, decoder_hidden = self.decoder(decoder_hidden, last_word, encoder_outputs)
 
       # Save output
       probas[t] = decoder_output
@@ -156,7 +176,7 @@ class Model(nn.Module):
       last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(target_seq.size(1))]])
       for t in range(target_seq.size(0)):
         # Pass through decoder
-        decoder_output, decoder_hidden = self.decoder(decoder_hidden, last_word)
+        decoder_output, decoder_hidden = self.decoder(decoder_hidden, last_word, encoder_outputs)
 
         # Get top candidates
         topv, topi = decoder_output.data.topk(1)

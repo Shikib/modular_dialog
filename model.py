@@ -47,14 +47,16 @@ class Policy(nn.Module):
     return (F.tanh(output), hidden[1])
 
 class Decoder(nn.Module):
-  def __init__(self, emb_size, hid_size, vocab_size):
+  def __init__(self, emb_size, hid_size, vocab_size, use_attn=True):
     super(Decoder, self).__init__()
     self.embedding = nn.Embedding(vocab_size, emb_size)
     self.decoder = nn.LSTM(emb_size, hid_size)
     self.out = nn.Linear(hid_size, vocab_size)
+    self.use_attn = use_attn
+    if use_attn:
+      print("ERROR: NO ATTN")
 
   def forward(self, hidden, last_word):
-    #print('NO_ATTN')
     embedded = self.embedding(last_word)
     output, hidden = self.decoder(embedded, hidden)
     return F.log_softmax(self.out(output), dim=2), hidden

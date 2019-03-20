@@ -67,7 +67,8 @@ policy = model.Policy(hidden_size=args.hid_size,
 
 decoder = model.Decoder(emb_size=args.emb_size,
                         hid_size=args.hid_size,
-                        vocab_size=len(output_w2i))
+                        vocab_size=len(output_w2i),
+                        use_attn=args.use_attn)
 
 model = model.Model(encoder=encoder,
                     policy=policy,
@@ -98,5 +99,6 @@ for epoch in range(args.num_epochs):
 
     # Log batch if needed
     if batch > 0 and batch % 50 == 0:
-      print("Epoch {0}/{1} Batch {2}/{3} Avg Loss {4:.2f}".format(epoch+1, args.num_epochs, batch+1, num_batches, cum_loss/(batch+1)))
+      print("Epoch {0}/{1} Batch {2}/{3} Avg Loss {4:.2f}".format(epoch+1, args.num_epochs, batch, num_batches, cum_loss/(batch+1)))
 
+  model.save("{0}_{1}".format(args.model_name, epoch))

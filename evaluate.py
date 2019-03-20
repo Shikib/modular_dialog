@@ -3,7 +3,7 @@ import json
 import math
 import random
 
-from nlp_utils import *
+from utils.nlp import *
 
 predict_f = open('attn_19_predicted_sentences.txt')
 predicted_sentences = [x.strip() for x in predict_f][:-1]

@@ -3,8 +3,10 @@ import json
 import math
 import model
 import random
+import subprocess
 
 from collections import defaultdict
+#from evaluate_model import evaluateModel
 
 def str2bool(v):
   if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -81,21 +83,64 @@ model = model.Model(encoder=encoder,
                     output_w2i=output_w2i,
                     args=args).cuda()
 
-# Load saved model parameters
-model.load(args.model_name)
-
 # Load data
 train = load_data('data/train_dials.json')
 valid = load_data('data/val_dials.json')
 test = load_data('data/test_dials.json')
 
-num_batches = math.ceil(len(test)/args.batch_size)
+val_targets = json.load(open('data/val_dials.json'))
+test_targets = json.load(open('data/test_dials.json'))
+
+num_val_batches = math.ceil(len(valid)/args.batch_size)
+num_test_batches = math.ceil(len(test)/args.batch_size)
+
 indices = list(range(len(test)))
 
+model_name = args.model_name
+
+best_val_score = 0.0
+best_val_epoch = 15
+
+for epoch in range(0):
+  # Load saved model parameters
+  model.load(model_name+"_"+str(epoch))
+  all_predicted = defaultdict(list)
+  for batch in range(num_val_batches):
+    # Prepare batch
+    batch_indices = indices[batch*args.batch_size:(batch+1)*args.batch_size]
+    batch_rows = [valid[i] for i in batch_indices]
+    input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
+
+    # Get predicted sentences for batch
+    predicted_sentences = model.decode(input_seq, input_lens, 50, db, bs)
+
+    # Add predicted to list
+    for i,sent in enumerate(predicted_sentences):
+      all_predicted[batch_rows[i][-2]].append(sent) 
+
+  json.dump(all_predicted, open('temp.json', 'w+'))
+  out = subprocess.check_output("python2.7 evaluate.py --pred temp.json --target data/val_dials.json".split())
+  val_score = float(out.decode().split('|')[-1].strip())
+
+
+  #val_score = evaluateModel(all_predicted, val_targets, mode='val')
+  print("Epoch {0}: Validation Score {1:.10f}".format(epoch, val_score))
+  print("-----------------------------------")
+  print(out.decode().split('|')[0] + '\n')
+
+  if val_score > best_val_score:
+    best_val_score = val_score
+    best_val_epoch = epoch
+
+print("Best validation score after epoch {0}".format(best_val_epoch))
+
+# Evaluate best val model on test data
+model.load(model_name+"_"+str(best_val_epoch))
+
 all_predicted = defaultdict(list)
-for batch in range(num_batches):
+for batch in range(num_test_batches):
   if batch % 50 == 0:
-    print("Batch {0}/{1}".format(batch, num_batches))
+    print("Batch {0}/{1}".format(batch, num_test_batches))
   # Prepare batch
   batch_indices = indices[batch*args.batch_size:(batch+1)*args.batch_size]
   batch_rows = [test[i] for i in batch_indices]
@@ -109,4 +154,7 @@ for batch in range(num_batches):
   for i,sent in enumerate(predicted_sentences):
     all_predicted[batch_rows[i][-2]].append(sent) 
 
-json.dump(all_predicted, open('{0}_predictions.json'.format(args.model_name), 'w+'))
+json.dump(all_predicted, open('temp.json', 'w+'))
+out = subprocess.check_output("python2.7 evaluate.py --pred temp.json --target data/test_dials.json".split())
+print(out.decode().split('|')[0] + '\n')
+print("Test score:", float(out.decode().split('|')[-1].strip()))

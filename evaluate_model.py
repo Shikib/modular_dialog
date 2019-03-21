@@ -110,6 +110,10 @@ def evaluateModel(dialogues, val_dials, mode='valid'):
         print 'Corpus Success : %2.2f%%' % (successes / float(total) * 100)
         print 'Total number of dialogues: %s ' % total
 
+    weighted_score = 0.5*((matches / float(total) * 100)) + 0.5*((successes / float(total) * 100)) + 100*(bscorer.score(model_corpus, corpus))
+    print("|{0}".format(weighted_score))
+    return weighted_score
+
 
 def evaluateGeneratedDialogue(dialog, goal, realDialogue, real_requestables):
     """Evaluates the dialogue created by the model.

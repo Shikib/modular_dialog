@@ -5,7 +5,12 @@ import random
 
 from evaluate_model import evaluateModel
 
-predictions = json.load(open('baseline_19_predictions.json'))
-targets = json.load(open('data/test_dials.json'))
+parser = argparse.ArgumentParser(description='MultiWoz Eval Script')
+parser.add_argument('--target', type=str, default='target file')
+parser.add_argument('--pred', type=str, default='pred file')
+args = parser.parse_args()
+
+predictions = json.load(open(args.pred))
+targets = json.load(open(args.target))
 
 evaluateModel(predictions, targets, mode='test')

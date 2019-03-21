@@ -70,7 +70,7 @@ class Decoder(nn.Module):
       # Attn
       h = hidden[0].repeat(encoder_outputs.size(0), 1, 1)
       attn_energy = F.tanh(self.W_a(torch.cat((h, encoder_outputs), dim=2)))
-      attn_logits = self.v(attn_energy).squeeze() - 1e5 * (encoder_outputs.sum(dim=2) == 0).float()
+      attn_logits = self.v(attn_energy).squeeze(-1) - 1e5 * (encoder_outputs.sum(dim=2) == 0).float()
       attn_weights = F.softmax(attn_logits, dim=0).permute(1,0).unsqueeze(1)
       context_vec = attn_weights.bmm(encoder_outputs.permute(1,0,2)).permute(1,0,2)
 

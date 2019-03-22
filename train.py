@@ -58,9 +58,9 @@ input_w2i = json.load(open('data/input_lang.word2index.json'))
 output_w2i = json.load(open('data/output_lang.word2index.json'))
 
 # Create models
-encoder = model.Encoder(vocab_size=len(input_w2i), 
-                        emb_size=args.emb_size, 
-                        hid_size=args.hid_size)
+encoder = model.HierarchicalEncoder(vocab_size=len(input_w2i), 
+                                    emb_size=args.emb_size, 
+                                    hid_size=args.hid_size)
 
 policy = model.Policy(hidden_size=args.hid_size,
                       db_size=args.db_size,

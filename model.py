@@ -112,14 +112,24 @@ class Model(nn.Module):
 
     inputs = [[self.input_w2i.get(w, self.input_w2i['_UNK']) for w in row[0]] for row in rows]
     input_seq, input_lens = _pad(inputs, pad=self.input_w2i['_PAD'])
-    input_seq = torch.cuda.LongTensor(input_seq).t()
+    if self.args.use_cuda is True:
+      input_seq = torch.cuda.LongTensor(input_seq).t()
+    else:
+      input_seq = torch.LongTensor(input_seq).t()
 
     targets = [[self.output_w2i.get(w, self.output_w2i['_UNK']) for w in row[1]] for row in rows]
     target_seq, target_lens = _pad(targets, pad=self.output_w2i['_PAD'])
-    target_seq = torch.cuda.LongTensor(target_seq).t()
+    if self.args.use_cuda is True:
+      target_seq = torch.cuda.LongTensor(target_seq).t()
+    else:
+      target_seq = torch.LongTensor(target_seq).t()
 
-    db = torch.cuda.FloatTensor([[int(e) for e in row[2]] for row in rows])
-    bs = torch.cuda.FloatTensor([[int(e) for e in row[3]] for row in rows])
+    if self.args.use_cuda is True:
+      db = torch.cuda.FloatTensor([[int(e) for e in row[2]] for row in rows])
+      bs = torch.cuda.FloatTensor([[int(e) for e in row[3]] for row in rows])
+    else:
+      db = torch.FloatTensor([[int(e) for e in row[2]] for row in rows])
+      bs = torch.FloatTensor([[int(e) for e in row[3]] for row in rows])
 
     return input_seq, input_lens, target_seq, target_lens, db, bs
 
@@ -131,7 +141,9 @@ class Model(nn.Module):
     decoder_hidden = self.policy(encoder_hidden, db, bs)
 
     # Decoder
-    probas = torch.zeros(target_seq.size(0), target_seq.size(1), len(self.output_i2w)).cuda()
+    probas = torch.zeros(target_seq.size(0), target_seq.size(1), len(self.output_i2w))
+    if self.args.use_cuda is True:
+      probas = probas.cuda()
     last_word = target_seq[0].unsqueeze(0)
     for t in range(1,target_seq.size(0)):
       # Pass through decoder
@@ -173,7 +185,10 @@ class Model(nn.Module):
       decoder_hidden = self.policy(encoder_hidden, db, bs)
 
       # Decoder
-      last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(input_seq.size(1))]])
+      if self.args.use_cuda is True:
+        last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(input_seq.size(1))]])
+      else:
+        last_word = torch.LongTensor([[self.output_w2i['_GO'] for _ in range(input_seq.size(1))]])
       for t in range(max_len):
         # Pass through decoder
         decoder_output, decoder_hidden = self.decoder(decoder_hidden, last_word, encoder_outputs)
@@ -227,7 +242,11 @@ class Model(nn.Module):
       decoder_hidden = self.policy(encoder_hidden, db, bs)
 
       # Decoder
-      last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(input_seq.size(1))]])
+      
+      if self.args.use_cuda is True:
+        last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(input_seq.size(1))]])
+      else:
+        last_word = torch.LongTensor([[self.output_w2i['_GO'] for _ in range(input_seq.size(1))]])
       beam = [(_to_cpu(decoder_hidden), _to_cpu(last_word), 0, 0, "")]
       for _ in range(max_len):
         new_beam = []
@@ -238,7 +257,10 @@ class Model(nn.Module):
             continue
           
           # Propagate through decoder
-          decoder_output, decoder_hidden = self.decoder(_to_cuda(hyp[0]), _to_cuda(hyp[1]), encoder_outputs)
+          if self.args.use_cuda is True:
+            decoder_output, decoder_hidden = self.decoder(_to_cuda(hyp[0]), _to_cuda(hyp[1]), encoder_outputs)
+          else:
+            decoder_output, decoder_hidden = self.decoder(hyp[0], hyp[1], encoder_outputs)
 
           # Get top candidates and add new hypotheses
           topv, topi = decoder_output.data.topk(beam_width)

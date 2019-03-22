@@ -20,6 +20,7 @@ parser.add_argument('--num_epochs', type=int, default=20)
 parser.add_argument('--batch_size', type=int, default=64, metavar='N')
 parser.add_argument('--use_attn', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--model_name', type=str, default='baseline')
+parser.add_argument('--use_cuda', type=bool, default=False)
 
 parser.add_argument('--emb_size', type=int, default=50)
 parser.add_argument('--hid_size', type=int, default=150)
@@ -75,7 +76,9 @@ model = model.Model(encoder=encoder,
                     decoder=decoder,
                     input_w2i=input_w2i,
                     output_w2i=output_w2i,
-                    args=args).cuda()
+                    args=args)
+if args.use_cuda is True:
+  model = model.cuda()
 
 # Load data
 train = load_data('data/train_dials.json')

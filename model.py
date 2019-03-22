@@ -20,8 +20,11 @@ class Encoder(nn.Module):
 
   def forward(self, seqs, lens):
     if type(seqs[0][0]) is int:
-      seqs, lens = self.pad(seqs) 
-      seqs = torch.cuda.LongTensor(seqs).t()
+      seqs, lens = self.pad(seqs)
+      if self.args.use_cuda is True: 
+        seqs = torch.cuda.LongTensor(seqs).t()
+      else:
+        seqs = torch.LongTensor(seqs).t()
 
     # Embed
     if self.embed:

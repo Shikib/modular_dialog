@@ -5,14 +5,29 @@ import torch.nn.functional as F
 from torch import optim
 
 class Encoder(nn.Module):
-  def __init__(self, vocab_size, emb_size, hid_size):
+  def __init__(self, vocab_size, emb_size, hid_size, embed=True):
     super(Encoder, self).__init__() 
-    self.embedding = nn.Embedding(vocab_size, emb_size, padding_idx=3)
+    self.embed = embed
+    if self.embed:
+      self.embedding = nn.Embedding(vocab_size, emb_size, padding_idx=3)
     self.encoder = nn.LSTM(emb_size, hid_size)
 
+  def pad(self, arr, pad=3):
+    # Given an array of integer arrays, pad all arrays to the same length
+    lengths = [len(e) for e in arr]
+    max_len = max(lengths)
+    return [e+[pad]*(max_len-len(e)) for e in arr], lengths
+
   def forward(self, seqs, lens):
+    if type(seqs[0][0]) is int:
+      seqs, lens = self.pad(seqs) 
+      seqs = torch.cuda.LongTensor(seqs).t()
+
     # Embed
-    emb_seqs = self.embedding(seqs)
+    if self.embed:
+      emb_seqs = self.embedding(seqs)
+    else:
+      emb_seqs = seqs
 
     # Sort by length
     sort_idx = sorted(range(len(lens)), key=lambda i: -lens[i])
@@ -34,6 +49,43 @@ class Encoder(nn.Module):
     hidden = (hidden[0][:,unsort_idx], hidden[1][:,unsort_idx])
 
     return outputs, hidden
+
+class HierarchicalEncoder(nn.Module):
+  def __init__(self, vocab_size, emb_size, hid_size):
+    super(HierarchicalEncoder, self).__init__() 
+    self.utt_encoder = Encoder(vocab_size, emb_size, hid_size, embed=True)
+    self.ctx_encoder = Encoder(vocab_size, hid_size, hid_size, embed=False)
+
+  def forward(self, seqs, lens):
+    # First split into utterances
+    utts = []
+    conv_inds = []
+    for i,seq in enumerate(seqs):
+      cur_seq = seq
+      while len(cur_seq) > 0:
+        # Find and add full utt
+        next_utt_ind = cur_seq.index(1)+1
+        utts.append(cur_seq[:next_utt_ind])
+        cur_seq = cur_seq[next_utt_ind:]
+        conv_inds.append(i)
+
+    # Encode all of the utterances
+    _, encoder_hiddens = self.utt_encoder(utts, None)
+
+    # Re-construct conversations
+    ctx_hiddens = [[] for _ in range(len(lens))]
+    for i,ind in enumerate(conv_inds):
+      ctx_hiddens[ind].append(encoder_hiddens[0][0,i])
+
+    # Pad hidden states and create a tensor
+    ctx_lens = [len(ctx) for ctx in ctx_hiddens]
+    max_ctx_len = max(ctx_lens)
+    hid_size = ctx_hiddens[0][0].size()
+    ctx_hiddens = [ctx+[torch.zeros(hid_size).cuda()]*(max_ctx_len-len(ctx))
+                   for ctx in ctx_hiddens]
+    ctx_tensor = torch.stack([torch.stack(ctx) for ctx in ctx_hiddens]).permute(1,0,2)
+
+    return self.ctx_encoder(ctx_tensor, ctx_lens)
 
 class Policy(nn.Module):
   def __init__(self, hidden_size, db_size, bs_size):
@@ -103,7 +155,7 @@ class Model(nn.Module):
     self.criterion = nn.NLLLoss(ignore_index=3, size_average=True)
     self.optim = optim.Adam(lr=args.lr, params=self.parameters(), weight_decay=args.l2_norm)
 
-  def prep_batch(self, rows):
+  def prep_batch(self, rows, hierarchical=True):
     def _pad(arr, pad=3):
       # Given an array of integer arrays, pad all arrays to the same length
       lengths = [len(e) for e in arr]
@@ -111,8 +163,10 @@ class Model(nn.Module):
       return [e+[pad]*(max_len-len(e)) for e in arr], lengths
 
     inputs = [[self.input_w2i.get(w, self.input_w2i['_UNK']) for w in row[0]] for row in rows]
-    input_seq, input_lens = _pad(inputs, pad=self.input_w2i['_PAD'])
-    input_seq = torch.cuda.LongTensor(input_seq).t()
+    #input_seq, input_lens = _pad(inputs, pad=self.input_w2i['_PAD'])
+    #input_seq = torch.cuda.LongTensor(input_seq).t()
+    input_seq = inputs
+    input_lens = [len(inp) for inp in input_seq]
 
     targets = [[self.output_w2i.get(w, self.output_w2i['_UNK']) for w in row[1]] for row in rows]
     target_seq, target_lens = _pad(targets, pad=self.output_w2i['_PAD'])

@@ -22,8 +22,10 @@ parser.add_argument('--seed', type=int, default=42, metavar='S', help='random se
 parser.add_argument('--num_epochs', type=int, default=20)
 parser.add_argument('--batch_size', type=int, default=64, metavar='N')
 parser.add_argument('--use_attn', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--domain', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--train_lm', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--model_name', type=str, default='baseline')
-parser.add_argument('--use_cuda', type=bool, default=False)
+parser.add_argument('--use_cuda', type=bool, default=True)
 
 parser.add_argument('--emb_size', type=int, default=50)
 parser.add_argument('--hid_size', type=int, default=150)
@@ -33,6 +35,13 @@ parser.add_argument('--bs_size', type=int, default=94)
 parser.add_argument('--lr', type=float, default=0.005)
 parser.add_argument('--l2_norm', type=float, default=0.00001)
 parser.add_argument('--clip', type=float, default=5.0, help='clip the gradient by norm')
+
+parser.add_argument('--shallow_fusion', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--deep_fusion', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--cold_fusion', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--load_lm', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--lm_name', type=str, default='baseline')
+parser.add_argument('--s2s_name', type=str, default='baseline')
 
 args = parser.parse_args()
 
@@ -130,12 +139,76 @@ decoder = model.Decoder(emb_size=args.emb_size,
                         vocab_size=len(output_w2i),
                         use_attn=args.use_attn)
 
-model = model.Model(encoder=encoder,
+if args.shallow_fusion or args.deep_fusion:
+  s2s = model.Model(encoder=encoder,
                     policy=policy,
                     decoder=decoder,
                     input_w2i=input_w2i,
                     output_w2i=output_w2i,
                     args=args)
+  s2s.load(args.s2s_name)
+  lm_decoder = model.Decoder(emb_size=args.emb_size,
+                             hid_size=args.hid_size,
+                             vocab_size=len(output_w2i),
+                             use_attn=False)
+  lm = model.LanguageModel(decoder=lm_decoder,
+                           input_w2i=input_w2i,
+                           output_w2i=output_w2i,
+                           args=args)
+  lm.load(args.lm_name)
+  if args.shallow_fusion:
+    model = model.ShallowFusionModel(s2s, lm, args)
+    model.save(args.model_name + '_0')
+  elif args.deep_fusion:
+    model = model.DeepFusionModel(s2s, lm, args)
+elif args.cold_fusion:
+  s2s = model.Model(encoder=encoder,
+                    policy=policy,
+                    decoder=decoder,
+                    input_w2i=input_w2i,
+                    output_w2i=output_w2i,
+                    args=args)
+  lm_decoder = model.Decoder(emb_size=args.emb_size,
+                             hid_size=args.hid_size,
+                             vocab_size=len(output_w2i),
+                             use_attn=False)
+  lm = model.LanguageModel(decoder=lm_decoder,
+                           input_w2i=input_w2i,
+                           output_w2i=output_w2i,
+                           args=args)
+  lm.load(args.lm_name)
+  cf = model.ColdFusionLayer(hid_size=args.hid_size,
+                             vocab_size=len(output_w2i))
+  model = model.ColdFusionModel(s2s, lm, cf, args)
+elif args.load_lm:
+  lm_decoder = model.Decoder(emb_size=args.emb_size,
+                             hid_size=args.hid_size,
+                             vocab_size=len(output_w2i),
+                             use_attn=False)
+  lm = model.LanguageModel(decoder=lm_decoder,
+                           input_w2i=input_w2i,
+                           output_w2i=output_w2i,
+                           args=args)
+  lm.load(args.lm_name)
+  model = model.Model(encoder=encoder,
+                      policy=policy,
+                      decoder=lm.decoder,
+                      input_w2i=input_w2i,
+                      output_w2i=output_w2i,
+                      args=args)
+elif not args.train_lm:
+  model = model.Model(encoder=encoder,
+                      policy=policy,
+                      decoder=decoder,
+                      input_w2i=input_w2i,
+                      output_w2i=output_w2i,
+                      args=args)
+else:
+  model = model.LanguageModel(decoder=decoder,
+                              input_w2i=input_w2i,
+                              output_w2i=output_w2i,
+                              args=args)
+  
 if args.use_cuda is True:
   model = model.cuda()
 
@@ -144,11 +217,13 @@ train = load_data('data/train_dials.json')
 valid = load_data('data/val_dials.json')
 test = load_data('data/test_dials.json')
 
+
 # Load domain data
-test_domains = [u'attraction']
-train = load_domain_data('data/train_dials.json', test_domains, exclude=True)
-valid = load_domain_data('data/val_dials.json', test_domains, exclude=False)
-test = load_domain_data('data/test_dials.json', test_domains, exclude=False)
+if args.domain:
+  test_domains = [u'attraction']
+  train = load_domain_data('data/train_dials.json', test_domains, exclude=True)
+  valid = load_domain_data('data/val_dials.json', test_domains, exclude=False)
+  test = load_domain_data('data/test_dials.json', test_domains, exclude=False)
 
 print("Number of training instances:", len(train))
 print("Number of validation instances:", len(valid))

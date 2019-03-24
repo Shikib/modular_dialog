@@ -64,8 +64,8 @@ output_i2w = json.load(open('data/output_lang.index2word.json'))
 
 # Create models
 encoder = model.Encoder(vocab_size=len(input_w2i), 
-                        emb_size=args.emb_size, 
-                        hid_size=args.hid_size)
+                                    emb_size=args.emb_size, 
+                                    hid_size=args.hid_size)
 
 policy = model.Policy(hidden_size=args.hid_size,
                       db_size=args.db_size,
@@ -92,14 +92,13 @@ val_targets = json.load(open('data/val_dials.json'))
 test_targets = json.load(open('data/test_dials.json'))
 
 num_val_batches = math.ceil(len(valid)/args.batch_size)
-num_test_batches = math.ceil(len(test)/args.batch_size)
 
 indices = list(range(len(test)))
 
 model_name = args.model_name
 
 best_val_score = 0.0
-best_val_epoch = 15
+best_val_epoch = 17
 
 for epoch in range(0):
   # Load saved model parameters
@@ -136,7 +135,8 @@ print("Best validation score after epoch {0}".format(best_val_epoch))
 
 # Evaluate best val model on test data
 model.load(model_name+"_"+str(best_val_epoch))
-
+args.batch_size = 1
+num_test_batches = math.ceil(len(test)/args.batch_size)
 all_predicted = defaultdict(list)
 for batch in range(num_test_batches):
   if batch % 50 == 0:

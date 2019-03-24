@@ -216,7 +216,7 @@ class Model(nn.Module):
     return loss.item()
 
   def decode(self, input_seq, input_lens, max_len, db, bs):
-    batch_size = input_seq.size(1)
+    batch_size = len(input_seq)
     predictions = torch.zeros((batch_size, max_len))
 
     with torch.no_grad():
@@ -227,7 +227,7 @@ class Model(nn.Module):
       decoder_hidden = self.policy(encoder_hidden, db, bs)
 
       # Decoder
-      last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(input_seq.size(1))]])
+      last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(len(input_seq))]])
       for t in range(max_len):
         # Pass through decoder
         decoder_output, decoder_hidden = self.decoder(decoder_hidden, last_word, encoder_outputs)
@@ -272,7 +272,7 @@ class Model(nn.Module):
     # Beam is (hid_cpu, input_word, log_p, length, seq_so_far)
     with torch.no_grad():
       # Batch size must be 1
-      assert input_seq.size(1) == 1
+      assert len(input_seq) == 1
 
       # Encoder
       encoder_outputs, encoder_hidden = self.encoder(input_seq, input_lens)
@@ -281,7 +281,7 @@ class Model(nn.Module):
       decoder_hidden = self.policy(encoder_hidden, db, bs)
 
       # Decoder
-      last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(input_seq.size(1))]])
+      last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(len(input_seq))]])
       beam = [(_to_cpu(decoder_hidden), _to_cpu(last_word), 0, 0, "")]
       for _ in range(max_len):
         new_beam = []

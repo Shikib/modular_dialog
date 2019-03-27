@@ -43,6 +43,9 @@ parser.add_argument('--load_lm', type=str2bool, const=True, nargs='?', default=F
 parser.add_argument('--lm_name', type=str, default='baseline')
 parser.add_argument('--s2s_name', type=str, default='baseline')
 
+
+parser.add_argument('--data_size', type=float, default=-1.0)
+
 args = parser.parse_args()
 
 def load_data(filename):
@@ -217,10 +220,14 @@ train = load_data('data/train_dials.json')
 valid = load_data('data/val_dials.json')
 test = load_data('data/test_dials.json')
 
+# Reduce data
+if args.data_size > -1:
+  random.shuffle(train)
+  train = train[:int(len(train)*args.data_size)]
 
 # Load domain data
 if args.domain:
-  test_domains = [u'attraction']
+  test_domains = [u'restaurant']
   train = load_domain_data('data/train_dials.json', test_domains, exclude=True)
   valid = load_domain_data('data/val_dials.json', test_domains, exclude=False)
   test = load_domain_data('data/test_dials.json', test_domains, exclude=False)

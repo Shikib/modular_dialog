@@ -44,10 +44,10 @@ parser.add_argument('--s2s_name', type=str, default='baseline')
 
 args = parser.parse_args()
 
-def load_data(filename):
+def load_data(filename, dial_acts_data, dial_act_dict):
   data = json.load(open(filename))
   rows = []
-  for filename,dial in data.items():
+  for file, dial in data.items():
     input_so_far = []
     for i in range(len(dial['sys'])):
       input_so_far += ['_GO'] + dial['usr'][i].strip().split() + ['_EOS']
@@ -57,18 +57,46 @@ def load_data(filename):
       db = dial['db'][i]
       bs = dial['bs'][i]
 
-      rows.append((input_seq, target_seq, db, bs, filename, i))
+      # Get dialog acts
+      dial_turns = dial_acts_data[file.strip('.json')]
+      if str(i+1) not in dial_turns.keys():
+        da = [0.0]*len(dial_act_dict)
+      else:
+        turn = dial_turns[str(i+1)]
+        da = [0.0]*len(dial_act_dict)
+        if turn != "No Annotation":
+          for act in turn.keys():
+            da[dial_act_dict[act]] = 1.0
+
+      rows.append((input_seq, target_seq, db, bs, da))
 
       # Add sys output
       input_so_far += target_seq
 
   return rows
 
+def get_dial_acts(filename):
+
+  data = json.load(open(filename))
+  dial_acts = []
+  for dial in data.values():
+    for turn in dial.values():
+      if turn == "No Annotation":
+        continue
+      for dial_act in turn.keys():
+        if dial_act not in dial_acts:
+          dial_acts.append(dial_act)
+  print(dial_acts, len(dial_acts))
+  return dict(zip(dial_acts, range(len(dial_acts)))), data
+
 # Load vocabulary
 input_w2i = json.load(open('data/input_lang.word2index.json'))
 output_w2i = json.load(open('data/output_lang.word2index.json'))
 input_i2w = json.load(open('data/input_lang.index2word.json'))
 output_i2w = json.load(open('data/output_lang.index2word.json'))
+
+
+dial_act_dict, dial_acts_data = get_dial_acts('data/multi-woz/dialogue_acts.json')
 
 # Create models
 encoder = model.Encoder(vocab_size=len(input_w2i), 
@@ -137,9 +165,9 @@ if args.use_cuda is True:
   model = model.cuda()
 
 # Load data
-train = load_data('data/train_dials.json')
-valid = load_data('data/val_dials.json')
-test = load_data('data/test_dials.json')
+train = load_data('data/train_dials.json', dial_acts_data, dial_act_dict)
+valid = load_data('data/val_dials.json', dial_acts_data, dial_act_dict)
+test = load_data('data/test_dials.json', dial_acts_data, dial_act_dict)
 
 val_targets = json.load(open('data/val_dials.json'))
 test_targets = json.load(open('data/test_dials.json'))

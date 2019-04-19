@@ -25,7 +25,7 @@ parser.add_argument('--use_attn', type=str2bool, const=True, nargs='?', default=
 parser.add_argument('--domain', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--train_lm', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--model_name', type=str, default='baseline')
-parser.add_argument('--use_cuda', type=bool, default=True)
+parser.add_argument('--use_cuda', type=str2bool, default=True)
 
 parser.add_argument('--emb_size', type=int, default=50)
 parser.add_argument('--hid_size', type=int, default=150)
@@ -45,10 +45,10 @@ parser.add_argument('--s2s_name', type=str, default='baseline')
 
 args = parser.parse_args()
 
-def load_data(filename):
+def load_data(filename, dial_acts_data, dial_act_dict):
   data = json.load(open(filename))
   rows = []
-  for dial in data.values():
+  for file, dial in data.items():
     input_so_far = []
     for i in range(len(dial['sys'])):
       input_so_far += ['_GO'] + dial['usr'][i].strip().split() + ['_EOS']
@@ -58,7 +58,18 @@ def load_data(filename):
       db = dial['db'][i]
       bs = dial['bs'][i]
 
-      rows.append((input_seq, target_seq, db, bs))
+      # Get dialog acts
+      dial_turns = dial_acts_data[file.strip('.json')]
+      if str(i+1) not in dial_turns.keys():
+        da = [0.0]*len(dial_act_dict)
+      else:
+        turn = dial_turns[str(i+1)]
+        da = [0.0]*len(dial_act_dict)
+        if turn != "No Annotation":
+          for act in turn.keys():
+            da[dial_act_dict[act]] = 1.0
+
+      rows.append((input_seq, target_seq, db, bs, da))
 
       # Add sys output
       input_so_far += target_seq
@@ -119,11 +130,29 @@ def load_domain_data(filename, domains, exclude=False):
       # Add sys output
       input_so_far += target_seq
 
-  return rows  
+  return rows
+
+def get_dial_acts(filename):
+
+  data = json.load(open(filename))
+  dial_acts = []
+  for dial in data.values():
+    for turn in dial.values():
+      if turn == "No Annotation":
+        continue
+      for dial_act in turn.keys():
+        if dial_act not in dial_acts:
+          dial_acts.append(dial_act)
+  print(dial_acts, len(dial_acts))
+  return dict(zip(dial_acts, range(len(dial_acts)))), data
+
 
 # Load vocabulary
 input_w2i = json.load(open('data/input_lang.word2index.json'))
 output_w2i = json.load(open('data/output_lang.word2index.json'))
+
+
+dial_act_dict, dial_acts_data = get_dial_acts('data/multi-woz/dialogue_acts.json')
 
 # Create models
 encoder = model.Encoder(vocab_size=len(input_w2i), 
@@ -212,10 +241,12 @@ else:
 if args.use_cuda is True:
   model = model.cuda()
 
+
+
 # Load data
-train = load_data('data/train_dials.json')
-valid = load_data('data/val_dials.json')
-test = load_data('data/test_dials.json')
+train = load_data('data/train_dials.json', dial_acts_data, dial_act_dict)
+valid = load_data('data/val_dials.json', dial_acts_data, dial_act_dict)
+test = load_data('data/test_dials.json', dial_acts_data, dial_act_dict)
 
 
 # Load domain data

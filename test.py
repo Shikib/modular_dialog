@@ -25,6 +25,7 @@ parser.add_argument('--batch_size', type=int, default=64, metavar='N')
 parser.add_argument('--use_attn', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--model_name', type=str, default='baseline')
 parser.add_argument('--use_cuda', type=bool, default=True)
+parser.add_argument('--domain', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--test_lm', type=str2bool, const=True, nargs='?', default=False)
 
 parser.add_argument('--emb_size', type=int, default=50)
@@ -88,6 +89,62 @@ def get_dial_acts(filename):
           dial_acts.append(dial_act)
   print(dial_acts, len(dial_acts))
   return dict(zip(dial_acts, range(len(dial_acts)))), data
+
+def get_belief_state_domains(bs):
+  doms = []
+  if 1 in bs[:14]:
+    doms.append(u'taxi')
+  if 1 in bs[14:31]:
+    doms.append(u'restaurant')
+  if 1 in bs[31:36]:
+    doms.append(u'hospital')
+  if 1 in bs[36:62]:
+    doms.append(u'hotel')
+  if 1 in bs[62:73]:
+    doms.append(u'attraction')
+  if 1 in bs[73:92]:
+    doms.append(u'train')
+  if 1 in bs[92:]:
+    doms.append(u'police')
+  return doms
+
+def get_dialogue_domains(dial):
+
+  doms = []
+  for i in range(len(dial['sys'])):
+    bs_doms = get_belief_state_domains(dial['bs'][i])
+    doms = list(set(doms).union(bs_doms))
+  return doms
+
+def load_domain_data(filename, domains, include=False):
+
+  data = json.load(open(filename))
+  rows = []
+  for filename,dial in data.items():
+    input_so_far = []
+
+    for i in range(len(dial['sys'])):
+      bs_doms = get_belief_state_domains(dial['bs'][i])
+      if include:
+        # Skip utterances which do not have any domains in 'domains'
+        if len(list(set(bs_doms).intersection(domains))) == 0:
+          continue
+      else:
+        # Skip utterances which have one of the domains in 'domains'
+        if len(list(set(bs_doms).intersection(domains))) > 0:
+          continue
+      input_so_far += ['_GO'] + dial['usr'][i].strip().split() + ['_EOS']
+      input_seq = [e for e in input_so_far]
+      target_seq = ['_GO'] + dial['sys'][i].strip().split() + ['_EOS']
+      db = dial['db'][i]
+      bs = dial['bs'][i]
+
+      rows.append((input_seq, target_seq, db, bs, filename, i))
+
+      # Add sys output
+      input_so_far += target_seq
+
+  return rows  
 
 # Load vocabulary
 input_w2i = json.load(open('data/input_lang.word2index.json'))
@@ -169,8 +226,12 @@ train = load_data('data/train_dials.json', dial_acts_data, dial_act_dict)
 valid = load_data('data/val_dials.json', dial_acts_data, dial_act_dict)
 test = load_data('data/test_dials.json', dial_acts_data, dial_act_dict)
 
-val_targets = json.load(open('data/val_dials.json'))
-test_targets = json.load(open('data/test_dials.json'))
+# Load domain data
+if args.domain:
+  test_domains = [u'restaurant']
+  train = load_domain_data('data/train_dials.json', test_domains, include=False)
+  valid = load_domain_data('data/val_dials.json', test_domains, include=True)
+  test = load_domain_data('data/test_dials.json', test_domains, include=True)
 
 num_val_batches = math.ceil(len(valid)/args.batch_size)
 
@@ -181,9 +242,24 @@ model_name = args.model_name
 best_val_score = 0.0
 best_val_epoch = -1
 
-for epoch in range(20):
+if args.domain:
+  data = json.load(open('data/val_dials.json'))
+  fname_to_indices = defaultdict(list)
+  for e in valid:
+    fname_to_indices[e[-2]].append(e[-1])
+  
+  new_data = {}
+  for fname,inds in fname_to_indices.items():
+    new_data[fname] = {k:[v[i] for i in inds] for k,v in data[fname].items()}
+  
+  json.dump(new_data, open('temp_true.json', 'w+'))
+
+for epoch in range(1):
+  indices = list(range(len(valid)))
   # Load saved model parameters
   model.load(model_name+"_"+str(epoch))
+  #lm.load('id_lm_10')
+  #model.lm = lm.decoder
   all_predicted = defaultdict(list)
   for batch in range(num_val_batches):
     # Prepare batch
@@ -199,7 +275,11 @@ for epoch in range(20):
       all_predicted[batch_rows[i][-2]].append(sent) 
 
   json.dump(all_predicted, open('temp.json', 'w+'))
-  out = subprocess.check_output("python2.7 evaluate.py --pred temp.json --target data/val_dials.json".split())
+
+  if args.domain:
+    out = subprocess.check_output("python2.7 evaluate.py --pred temp.json --target temp_true.json".split())
+  else:
+    out = subprocess.check_output("python2.7 evaluate.py --pred temp.json --target data/val_dials.json".split())
   val_score = float(out.decode().split('|')[-1].strip())
 
 
@@ -216,10 +296,13 @@ print("Best validation score after epoch {0}".format(best_val_epoch))
 
 # Evaluate best val model on test data
 model.load(model_name+"_"+str(best_val_epoch))
+#lm.load('id_lm_10')
+#model.lm = lm.decoder
 #args.batch_size = 1
 num_test_batches = math.ceil(len(test)/args.batch_size)
 all_predicted = defaultdict(list)
 for batch in range(num_test_batches):
+  indices = list(range(len(test)))
   if batch % 50 == 0:
     print("Batch {0}/{1}".format(batch, num_test_batches))
   # Prepare batch

@@ -1321,6 +1321,84 @@ class ColdFusionModel(nn.Module):
     self.lm.load_state_dict(torch.load(name+'.lmdec').state_dict())
     self.cf.load_state_dict(torch.load(name+'.cf').state_dict())
 
+
+class BeliefStatePredictor(nn.Module):
+
+  def __init__(self, encoder, hid_size, bs_size, input_w2i, args):
+
+    super(BeliefStatePredictor, self).__init__() 
+
+    self.args = args
+
+    self.encoder = encoder
+    self.linear = nn.Linear(hid_size, bs_size)
+
+    # Vocab
+    self.input_i2w = sorted(input_w2i, key=input_w2i.get)
+    self.input_w2i = input_w2i
+
+    self.criterion = nn.BCEWithLogitsLoss(reduce=True)
+    self.optim = optim.Adam(lr=args.lr, params=self.parameters(), weight_decay=args.l2_norm)
+
+
+  def prep_batch(self, rows, hierarchical=True):
+    def _pad(arr, pad=3):
+      # Given an array of integer arrays, pad all arrays to the same length
+      lengths = [len(e) for e in arr]
+      max_len = max(lengths)
+      return [e+[pad]*(max_len-len(e)) for e in arr], lengths
+
+    inputs = [[self.input_w2i.get(w, self.input_w2i['_UNK']) for w in row[0]] for row in rows]
+    # input_seq, input_lens = _pad(inputs, pad=self.input_w2i['_PAD'])
+    # if self.args.use_cuda is True:
+    #   input_seq = torch.cuda.LongTensor(input_seq).t()
+    # else:
+    #   input_seq = torch.LongTensor(input_seq).t()
+    input_seq = inputs
+    input_lens = [len(inp) for inp in input_seq]
+
+    if self.args.use_cuda is True:
+      bs = torch.cuda.FloatTensor([[int(e) for e in row[3]] for row in rows])
+    else:
+      bs = torch.FloatTensor([[int(e) for e in row[3]] for row in rows])
+
+    return input_seq, input_lens, bs
+
+
+  def forward(self, input_seq, input_lens):
+
+    encoder_outputs, encoder_hidden = self.encoder(input_seq, input_lens)
+
+    bs_out_logits = self.linear(encoder_hidden[0])
+
+    return bs_out_logits
+
+
+  def train(self, input_seq, input_lens, bs):
+
+    self.optim.zero_grad()
+
+    # Forward
+    bs_out_logits = self.forward(input_seq, input_lens)
+
+    # Loss
+    loss = self.criterion(bs_out_logits, bs)
+
+    # Backwards
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(self.parameters(), self.args.clip)
+    self.optim.step()
+
+
+
+  def save(self, name):
+    torch.save(self, name+'.bs')
+
+
+  def load(self, name):
+    self.load_state_dict(torch.load(name+'.bs').state_dict())
+
+
 #class ColdFusionModel(nn.Module):
 #  def __init__(self, encoder, policy, decoder, lm, input_w2i, output_w2i, args):
 #    super(ColdFusionModel, self).__init__()

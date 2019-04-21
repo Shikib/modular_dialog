@@ -39,6 +39,7 @@ parser.add_argument('--clip', type=float, default=5.0, help='clip the gradient b
 parser.add_argument('--shallow_fusion', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--deep_fusion', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--cold_fusion', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--bs_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--load_lm', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--lm_name', type=str, default='baseline')
 parser.add_argument('--s2s_name', type=str, default='baseline')
@@ -212,6 +213,12 @@ elif args.cold_fusion:
   cf = model.ColdFusionLayer(hid_size=args.hid_size,
                              vocab_size=len(output_w2i))
   model = model.ColdFusionModel(s2s, lm, cf, args)
+elif args.bs_predictor:
+  model = model.BeliefStatePredictor(encoder=encoder,
+                                     hid_size=args.hid_size,
+                                     bs_size=args.bs_size,
+                                     input_w2i=input_w2i,
+                                     args=args)
 elif args.load_lm:
   lm_decoder = model.Decoder(emb_size=args.emb_size,
                              hid_size=args.hid_size,
@@ -277,10 +284,14 @@ for epoch in range(args.num_epochs):
     # Prepare batch
     batch_indices = indices[batch*args.batch_size:(batch+1)*args.batch_size]
     batch_rows = [train[i] for i in batch_indices]
-    input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
 
-    # Train batch
-    cum_loss += model.train(input_seq, input_lens, target_seq, target_lens, db, bs)
+    if args.bs_predictor:
+      input_seq, input_lens, bs = model.prep_batch(batch_rows)
+      cum_loss += model.train(input_seq, input_lens, bs)
+    else:
+      input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
+      # Train batch
+      cum_loss += model.train(input_seq, input_lens, target_seq, target_lens, db, bs)
 
     # Log batch if needed
     if batch > 0 and batch % 50 == 0:

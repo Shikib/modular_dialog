@@ -1371,7 +1371,7 @@ class BeliefStatePredictor(nn.Module):
 
     bs_out_logits = self.linear(encoder_hidden[0])
 
-    return bs_out_logits
+    return bs_out_logits.squeeze(0)
 
 
   def train(self, input_seq, input_lens, bs):
@@ -1389,7 +1389,13 @@ class BeliefStatePredictor(nn.Module):
     torch.nn.utils.clip_grad_norm_(self.parameters(), self.args.clip)
     self.optim.step()
 
+    return loss.item()
 
+  def predict(self, input_seq, input_lens):
+
+    out_logits = self.forward(input_seq, input_lens)
+    out_probs = F.sigmoid(out_logits)
+    return (out_probs >= 0.5)
 
   def save(self, name):
     torch.save(self, name+'.bs')

@@ -8,6 +8,9 @@ import subprocess
 from collections import defaultdict
 #from evaluate_model import evaluateModel
 
+import numpy as np
+from sklearn.metrics import f1_score
+
 def str2bool(v):
   if v.lower() in ('yes', 'true', 't', 'y', '1'):
     return True
@@ -40,6 +43,7 @@ parser.add_argument('--clip', type=float, default=5.0, help='clip the gradient b
 parser.add_argument('--shallow_fusion', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--deep_fusion', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--cold_fusion', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--bs_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--lm_name', type=str, default='baseline')
 parser.add_argument('--s2s_name', type=str, default='baseline')
 
@@ -206,6 +210,12 @@ elif args.cold_fusion:
   cf = model.ColdFusionLayer(hid_size=args.hid_size,
                              vocab_size=len(output_w2i))
   model = model.ColdFusionModel(s2s, lm, cf, args)
+elif args.bs_predictor:
+  model = model.BeliefStatePredictor(encoder=encoder,
+                                     hid_size=args.hid_size,
+                                     bs_size=args.bs_size,
+                                     input_w2i=input_w2i,
+                                     args=args)
 elif not args.test_lm:
   model = model.Model(encoder=encoder,
                       policy=policy,
@@ -254,39 +264,52 @@ if args.domain:
   
   json.dump(new_data, open('temp_true.json', 'w+'))
 
-for epoch in range(1):
+for epoch in range(20):
   indices = list(range(len(valid)))
   # Load saved model parameters
   model.load(model_name+"_"+str(epoch))
   #lm.load('id_lm_10')
   #model.lm = lm.decoder
   all_predicted = defaultdict(list)
+  bs_predictions = []
   for batch in range(num_val_batches):
     # Prepare batch
     batch_indices = indices[batch*args.batch_size:(batch+1)*args.batch_size]
     batch_rows = [valid[i] for i in batch_indices]
-    input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
 
-    # Get predicted sentences for batch
-    predicted_sentences = model.decode(input_seq, input_lens, 50, db, bs)
+    if args.bs_predictor:
+      input_seq, input_lens, bs = model.prep_batch(batch_rows)
+      predicted_bs = model.predict(input_seq, input_lens)
+      bs_predictions.append((predicted_bs.reshape(-1).data.cpu().numpy(), bs.reshape(-1).data.cpu().numpy()))
+    else:
+      input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
 
-    # Add predicted to list
-    for i,sent in enumerate(predicted_sentences):
-      all_predicted[batch_rows[i][-2]].append(sent) 
+      # Get predicted sentences for batch
+      predicted_sentences = model.decode(input_seq, input_lens, 50, db, bs)
 
-  json.dump(all_predicted, open('temp.json', 'w+'))
+      # Add predicted to list
+      for i,sent in enumerate(predicted_sentences):
+        all_predicted[batch_rows[i][-2]].append(sent) 
 
-  if args.domain:
-    out = subprocess.check_output("python2.7 evaluate.py --pred temp.json --target temp_true.json".split())
+  # json.dump(all_predicted, open('temp.json', 'w+'))
+
+  if args.bs_predictor:
+    bs_preds = np.concatenate([x[0] for x in bs_predictions])
+    bs_true = np.concatenate([x[1] for x in bs_predictions])
+    val_score = f1_score(bs_true, bs_preds)
   else:
-    out = subprocess.check_output("python2.7 evaluate.py --pred temp.json --target data/val_dials.json".split())
-  val_score = float(out.decode().split('|')[-1].strip())
+    if args.domain:
+      out = subprocess.check_output("python2.7 evaluate.py --pred temp.json --target temp_true.json".split())
+    else:
+      out = subprocess.check_output("python2.7 evaluate.py --pred temp.json --target data/val_dials.json".split())
+    val_score = float(out.decode().split('|')[-1].strip())
 
 
   #val_score = evaluateModel(all_predicted, val_targets, mode='val')
   print("Epoch {0}: Validation Score {1:.10f}".format(epoch, val_score))
   print("-----------------------------------")
-  print(out.decode().split('|')[0] + '\n')
+  if not args.bs_predictor:
+    print(out.decode().split('|')[0] + '\n')
 
   if val_score > best_val_score:
     best_val_score = val_score
@@ -301,6 +324,7 @@ model.load(model_name+"_"+str(best_val_epoch))
 #args.batch_size = 1
 num_test_batches = math.ceil(len(test)/args.batch_size)
 all_predicted = defaultdict(list)
+bs_predictions = []
 for batch in range(num_test_batches):
   indices = list(range(len(test)))
   if batch % 50 == 0:
@@ -308,17 +332,28 @@ for batch in range(num_test_batches):
   # Prepare batch
   batch_indices = indices[batch*args.batch_size:(batch+1)*args.batch_size]
   batch_rows = [test[i] for i in batch_indices]
-  input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
+  if args.bs_predictor:
+    input_seq, input_lens, bs = model.prep_batch(batch_rows)
+    predicted_bs = model.predict(input_seq, input_lens)
+    bs_predictions.append((predicted_bs.reshape(-1).data.cpu().numpy(), bs.reshape(-1).data.cpu().numpy()))
+  else:
+    input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
 
-  # Get predicted sentences for batch
-  predicted_sentences = model.decode(input_seq, input_lens, 50, db, bs)
-  #predicted_sentences = model.beam_decode(input_seq, input_lens, 50, db, bs)
+    # Get predicted sentences for batch
+    predicted_sentences = model.decode(input_seq, input_lens, 50, db, bs)
+    #predicted_sentences = model.beam_decode(input_seq, input_lens, 50, db, bs)
 
-  # Add predicted to list
-  for i,sent in enumerate(predicted_sentences):
-    all_predicted[batch_rows[i][-2]].append(sent) 
+    # Add predicted to list
+    for i,sent in enumerate(predicted_sentences):
+      all_predicted[batch_rows[i][-2]].append(sent) 
 
-json.dump(all_predicted, open('temp.json', 'w+'))
-out = subprocess.check_output("python2.7 evaluate.py --pred temp.json --target data/test_dials.json".split())
-print(out.decode().split('|')[0] + '\n')
-print("Test score:", float(out.decode().split('|')[-1].strip()))
+if args.bs_predictor:
+  bs_preds = np.concatenate([x[0] for x in bs_predictions])
+  bs_true = np.concatenate([x[1] for x in bs_predictions])
+  test_score = f1_score(bs_true, bs_preds)
+  print("Test score:", test_score)
+else:
+  json.dump(all_predicted, open('temp.json', 'w+'))
+  out = subprocess.check_output("python2.7 evaluate.py --pred temp.json --target data/test_dials.json".split())
+  print(out.decode().split('|')[0] + '\n')
+  print("Test score:", float(out.decode().split('|')[-1].strip()))

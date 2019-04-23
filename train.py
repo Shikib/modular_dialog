@@ -78,9 +78,12 @@ def load_data(filename, dial_acts_data, dial_act_dict):
         da = [0.0]*len(dial_act_dict)
         if turn != "No Annotation":
           for act_type, slots in turn.items():
+            domain = act_type.split("-")[0]
+            da[dial_act_dict["d:"+domain]] = 1.0
+            da[dial_act_dict["d-a:"+act_type]] = 1.0
             for slot in slots:
-              act = act_type + "_" + slot[0]
-              da[dial_act_dict[act]] = 1.0
+              dasv = "d-a-s-v:" + act_type + "-" + slot[0] + "-" + slot[1]
+              da[dial_act_dict[dasv]] = 1.0
 
       rows.append((input_seq, target_seq, db, bs, da))
 
@@ -147,25 +150,32 @@ def load_domain_data(filename, domains, exclude=False):
 
 def get_dial_acts(filename):
 
-  data = json.load(open(filename))
-  dial_acts = []
-  for dial in data.values():
-    for turn in dial.values():
-      if turn == "No Annotation":
-        continue
-      for dial_act_type, slots in turn.items():
-        for slot in slots:
-          dial_act = dial_act_type + "_" + slot[0]
-          if dial_act not in dial_acts:
-            dial_acts.append(dial_act)
-  print(dial_acts, len(dial_acts))
-  return dict(zip(dial_acts, range(len(dial_acts)))), data
+  dial_acts_data = json.load(open(filename))
+
+  with open('data/template.txt') as f:
+    dial_acts = [x.strip('\n') for x in f.readlines()]
+
+  return dict(zip(dial_acts, range(len(dial_acts)))), dial_acts_data
+  # data = json.load(open(filename))
+  # dial_acts = []
+  # for dial in data.values():
+  #   for turn in dial.values():
+  #     if turn == "No Annotation":
+  #       continue
+  #     for dial_act_type, slots in turn.items():
+  #       for slot in slots:
+  #         dial_act = dial_act_type + "_" + slot[0]
+  #         if dial_act not in dial_acts:
+  #           dial_acts.append(dial_act)
+  # print(dial_acts, len(dial_acts))
+  # return dict(zip(dial_acts, range(len(dial_acts)))), data
 
 
 # Load vocabulary
 input_w2i = json.load(open('data/input_lang.word2index.json'))
 output_w2i = json.load(open('data/output_lang.word2index.json'))
-dial_act_dict, dial_acts_data = get_dial_acts('data/multi-woz/dialogue_acts.json')
+dial_act_dict, dial_acts_data = get_dial_acts('data/dialogue_act_feats.json')
+# print(len(dial_act_dict), len(dial_acts_data))
 
 # Create models
 encoder = model.Encoder(vocab_size=len(input_w2i), 

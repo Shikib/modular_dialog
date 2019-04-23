@@ -35,7 +35,7 @@ parser.add_argument('--emb_size', type=int, default=50)
 parser.add_argument('--hid_size', type=int, default=150)
 parser.add_argument('--db_size', type=int, default=30)
 parser.add_argument('--bs_size', type=int, default=94)
-parser.add_argument('--da_size', type=int, default=303)
+parser.add_argument('--da_size', type=int, default=593)
 
 parser.add_argument('--lr', type=float, default=0.005)
 parser.add_argument('--l2_norm', type=float, default=0.00001)
@@ -75,11 +75,12 @@ def load_data(filename, dial_acts_data, dial_act_dict):
         da = [0.0]*len(dial_act_dict)
         if turn != "No Annotation":
           for act_type, slots in turn.items():
+            domain = act_type.split("-")[0]
+            da[dial_act_dict["d:"+domain]] = 1.0
+            da[dial_act_dict["d-a:"+act_type]] = 1.0
             for slot in slots:
-              das = [act_type, slot[0], slot[1]]
-              for act in das:
-                if act in dial_act_dict:
-                  da[dial_act_dict[act]] = 1.0
+              dasv = "d-a-s-v:" + act_type + "-" + slot[0] + "-" + slot[1]
+              da[dial_act_dict[dasv]] = 1.0
 
       rows.append((input_seq, target_seq, db, bs, da, file, i))
 
@@ -88,23 +89,25 @@ def load_data(filename, dial_acts_data, dial_act_dict):
 
 def get_dial_acts(filename):
 
-  data = json.load(open(filename))
-  dial_acts = []
-  for dial in data.values():
-    for turn in dial.values():
-      if turn == "No Annotation":
-        continue
-      for dial_act_type, slots in turn.items():
-        for slot in slots:
-          dial_act = dial_act_type + "_" + slot[0]
+  dial_acts_data = json.load(open(filename))
 
+  with open('data/template.txt') as f:
+    dial_acts = [x.strip('\n') for x in f.readlines()]
 
-          dial_acts.append(dial_act_type)
-          dial_acts.append(slot[0])
-          dial_acts.append(slot[1])
-  dial_acts_dict = {e:i for i,e in enumerate([k for k,v in Counter(dial_acts).items() if v > 50  ])}
-  print(dial_acts_dict, len(dial_acts_dict))
-  return dial_acts_dict, data
+  return dict(zip(dial_acts, range(len(dial_acts)))), dial_acts_data
+  # data = json.load(open(filename))
+  # dial_acts = []
+  # for dial in data.values():
+  #   for turn in dial.values():
+  #     if turn == "No Annotation":
+  #       continue
+  #     for dial_act_type, slots in turn.items():
+  #       for slot in slots:
+  #         dial_act = dial_act_type + "_" + slot[0]
+  #         if dial_act not in dial_acts:
+  #           dial_acts.append(dial_act)
+  # print(dial_acts, len(dial_acts))
+  # return dict(zip(dial_acts, range(len(dial_acts)))), data
 
 def get_belief_state_domains(bs):
   doms = []
@@ -169,7 +172,7 @@ input_i2w = json.load(open('data/input_lang.index2word.json'))
 output_i2w = json.load(open('data/output_lang.index2word.json'))
 
 
-dial_act_dict, dial_acts_data = get_dial_acts('data/multi-woz/dialogue_acts.json')
+dial_act_dict, dial_acts_data = get_dial_acts('data/dialogue_act_feats.json')
 
 # Create models
 encoder = model.Encoder(vocab_size=len(input_w2i), 

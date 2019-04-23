@@ -46,6 +46,7 @@ parser.add_argument('--deep_fusion', type=str2bool, const=True, nargs='?', defau
 parser.add_argument('--cold_fusion', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--bs_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--dm_predictor', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--nlg_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--multitask', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--lm_name', type=str, default='baseline')
 parser.add_argument('--s2s_name', type=str, default='baseline')
@@ -214,15 +215,25 @@ elif args.cold_fusion:
                              vocab_size=len(output_w2i))
   model = model.ColdFusionModel(s2s, lm, cf, args)
 elif args.bs_predictor:
-  model = model.BeliefStatePredictor(encoder=encoder,
-                                     hid_size=args.hid_size,
-                                     bs_size=args.bs_size,
-                                     input_w2i=input_w2i,
-                                     args=args)
+  encoder = model.Encoder(vocab_size=len(input_w2i),
+                          emb_size=args.emb_size,
+                          hid_size=args.hid_size)
+  model = model.NLU(encoder=encoder,
+                    input_w2i=input_w2i,
+                    args=args)
 elif args.dm_predictor:
-  model = model.DMPredictor(bs_size=args.bs_size,
-                            da_size=args.da_size,
-                            args=args)
+  pnn = model.PNN(hidden_size=args.hid_size,
+                  db_size=args.db_size)
+  model = model.DM(pnn=pnn,
+                   args=args)
+elif args.nlg_predictor:
+  decoder = model.Decoder(emb_size=args.emb_size,
+                          hid_size=args.hid_size,
+                          vocab_size=len(output_w2i),
+                          use_attn=args.use_attn)
+  model = model.NLG(decoder=decoder,
+                    output_w2i=output_w2i,
+                    args=args)
 elif args.multitask:
   # Base components
   encoder = model.Encoder(vocab_size=len(input_w2i),
@@ -310,9 +321,17 @@ for epoch in range(20):
       predicted_bs = model.predict(input_seq, input_lens)
       bs_predictions.append((predicted_bs.data.cpu().numpy(), bs.data.cpu().numpy()))
     elif args.dm_predictor:
-      bs, da = model.prep_batch(batch_rows)
-      predicted_da = model.predict(bs)
+      bs, da, db = model.prep_batch(batch_rows)
+      predicted_da = model.predict(bs, db)
       bs_predictions.append((predicted_da.data.cpu().numpy(), da.data.cpu().numpy()))
+    elif args.nlg_predictor:
+      target_seq, target_lens, db, da = model.prep_batch(batch_rows)
+      # Get predicted sentences for batch
+      predicted_sentences = model.decode(50, db, da)
+
+      # Add predicted to list
+      for i,sent in enumerate(predicted_sentences):
+        all_predicted[batch_rows[i][-2]].append(sent) 
     else:
       input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
 
@@ -371,11 +390,19 @@ for batch in range(num_test_batches):
   if args.bs_predictor:
     input_seq, input_lens, bs = model.prep_batch(batch_rows)
     predicted_bs = model.predict(input_seq, input_lens)
-    bs_predictions.append((predicted_bs.reshape(-1).data.cpu().numpy(), bs.reshape(-1).data.cpu().numpy()))
+    bs_predictions.append((predicted_bs.data.cpu().numpy(), bs.data.cpu().numpy()))
   elif args.dm_predictor:
-    bs, da = model.prep_batch(batch_rows)
-    predicted_da = model.predict(bs)
+    bs, da, db = model.prep_batch(batch_rows)
+    predicted_da = model.predict(bs, db)
     bs_predictions.append((predicted_da.data.cpu().numpy(), da.data.cpu().numpy()))
+  elif args.nlg_predictor:
+    target_seq, target_lens, db, da = model.prep_batch(batch_rows)
+    # Get predicted sentences for batch
+    predicted_sentences = model.decode(input_seq, input_lens, 50, db, bs)
+
+    # Add predicted to list
+    for i,sent in enumerate(predicted_sentences):
+      all_predicted[batch_rows[i][-2]].append(sent) 
   else:
     input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
 

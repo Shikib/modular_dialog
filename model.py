@@ -1922,16 +1922,16 @@ class NLG(nn.Module):
       da_proj = self.da_in(da)
 
       # Policy network
-      decoder_hidden = (F.tanh(da_proj + db_proj), F.tanh(da_proj + db_proj))
+      decoder_hidden = (F.tanh(da_proj + db_proj).unsqueeze(0), F.tanh(da_proj + db_proj).unsqueeze(0))
 
       # Decoder
       if self.args.use_cuda is True:
-        last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(len(input_seq))]])
+        last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(batch_size)]])
       else:
-        last_word = torch.LongTensor([[self.output_w2i['_GO'] for _ in range(len(input_seq))]])
+        last_word = torch.LongTensor([[self.output_w2i['_GO'] for _ in range(batch_size)]])
       for t in range(max_len):
         # Pass through decoder
-        decoder_output, decoder_hidden = self.decoder(decoder_hidden, last_word, encoder_outputs)
+        decoder_output, decoder_hidden = self.decoder(decoder_hidden, last_word, None)
 
         # Get top candidates
         topv, topi = decoder_output.data.topk(1)

@@ -42,6 +42,7 @@ parser.add_argument('--deep_fusion', type=str2bool, const=True, nargs='?', defau
 parser.add_argument('--cold_fusion', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--bs_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--dm_predictor', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--nlg_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--s2s_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--multitask', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--load_lm', type=str2bool, const=True, nargs='?', default=False)
@@ -53,7 +54,7 @@ parser.add_argument('--data_size', type=float, default=-1.0)
 
 args = parser.parse_args()
 
-assert args.dm_predictor or args.bs_predictor or args.s2s_predictor or args.multitask, "Must turn on one training flag"
+assert args.dm_predictor or args.bs_predictor or args.s2s_predictor or args.nlg_predictor or args.multitask, "Must turn on one training flag"
 
 def load_data(filename, dial_acts_data, dial_act_dict):
   data = json.load(open(filename))
@@ -178,24 +179,45 @@ decoder = model.Decoder(emb_size=args.emb_size,
 
 
 if args.bs_predictor:
-  model = model.BeliefStatePredictor(encoder=encoder,
-                                     hid_size=args.hid_size,
-                                     bs_size=args.bs_size,
-                                     input_w2i=input_w2i,
-                                     args=args)
+  encoder = model.Encoder(vocab_size=len(input_w2i), 
+                          emb_size=args.emb_size, 
+                          hid_size=args.hid_size)
+  model = model.NLU(encoder=encoder,
+                    input_w2i=input_w2i,
+                    args=args).cuda()
 elif args.dm_predictor:
-  model = model.DMPredictor(bs_size=args.bs_size,
-                            da_size=args.da_size,
-                            args=args)
+  pnn = model.PNN(hidden_size=args.hid_size,
+                  db_size=args.db_size)
+  model = model.DM(pnn=pnn,
+                   args=args).cuda()
+elif args.nlg_predictor:
+  decoder = model.Decoder(emb_size=args.emb_size,
+                          hid_size=args.hid_size,
+                          vocab_size=len(output_w2i),
+                          use_attn=args.use_attn)
+  model = model.NLG(decoder=decoder,
+                    output_w2i=output_w2i,
+                    args=args).cuda()
 elif args.s2s_predictor:
-  model = model.Model(encoder=encoder,
-                      policy=policy,
-                      decoder=decoder,
-                      input_w2i=input_w2i,
-                      output_w2i=output_w2i,
-                      args=args)
+  # Base components
+  encoder = model.Encoder(vocab_size=len(input_w2i), 
+                          emb_size=args.emb_size, 
+                          hid_size=args.hid_size)
 
-if args.multitask:
+  pnn = model.PNN(hidden_size=args.hid_size,
+                  db_size=args.db_size)
+
+  decoder = model.Decoder(emb_size=args.emb_size,
+                          hid_size=args.hid_size,
+                          vocab_size=len(output_w2i),
+                          use_attn=args.use_attn)
+  model = model.E2E(encoder=encoder,
+                    pnn=pnn,
+                    decoder=decoder,
+                    input_w2i=input_w2i,
+                    output_w2i=output_w2i,
+                    args=args).cuda()
+elif args.multitask:
   # Base components
   encoder = model.Encoder(vocab_size=len(input_w2i), 
                           emb_size=args.emb_size, 
@@ -289,6 +311,9 @@ for epoch in range(args.num_epochs):
       elif args.dm_predictor:
         bs, da = model.prep_batch(batch_rows)
         cum_loss += model.train(bs, da)
+      elif args.nlg_predictor:
+        target_seq, target_lens, db, da = model.prep_batch(batch_rows)
+        cum_loss += model.train(target_seq, target_lens, db, da)
       else:
         input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
         # Train batch

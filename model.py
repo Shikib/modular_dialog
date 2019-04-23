@@ -107,10 +107,11 @@ class PNN(nn.Module):
     super(PNN, self).__init__()
     self.proj_hid = nn.Linear(hidden_size, hidden_size)
     self.proj_db = nn.Linear(db_size, hidden_size)
+    self.layer1 = nn.Linear(hidden_size, hidden_size)
 
   def forward(self, hidden, db):
-    output = self.proj_hid(hidden) + self.proj_db(db)
-    return F.tanh(output)
+    output = self.proj_hid(hidden) #+ self.proj_db(db)
+    return F.tanh(self.layer1(F.tanh(output)))
 
 class Decoder(nn.Module):
   def __init__(self, emb_size, hid_size, vocab_size, use_attn=True):
@@ -1744,7 +1745,7 @@ class NLU(nn.Module):
     return bs_out_logits.squeeze(0)
 
 
-  def train(self, input_seq, input_lens, bs):
+  def train(self, input_seq, input_lens, bs, no_prop=False):
     self.optim.zero_grad()
 
     # Forward
@@ -1752,6 +1753,9 @@ class NLU(nn.Module):
 
     # Loss
     loss = self.criterion(bs_out_logits, bs)
+
+    if no_prop:
+      return loss
 
     # Backwards
     loss.backward()
@@ -1781,7 +1785,7 @@ class DM(nn.Module):
     self.da_out = nn.Linear(args.hid_size, args.da_size)
 
     # Training
-    self.criterion = nn.BCEWithLogitsLoss(reduce=True)
+    self.criterion = nn.BCEWithLogitsLoss(reduce=True, pos_weight=torch.Tensor([10.0]))
     self.optim = optim.Adam(lr=args.lr, params=self.parameters(), weight_decay=args.l2_norm)
     self.args = args
 
@@ -1803,7 +1807,7 @@ class DM(nn.Module):
     da_pred = self.da_out(da_hid)
     return da_pred
 
-  def train(self, bs, da, db):
+  def train(self, bs, da, db, no_prop=False):
     self.optim.zero_grad()
 
     # Forward
@@ -1811,6 +1815,8 @@ class DM(nn.Module):
 
     # Loss
     loss = self.criterion(logits, da)
+    if no_prop:
+      return loss
 
     # Backwards
     loss.backward()
@@ -1877,7 +1883,7 @@ class NLG(nn.Module):
     da_proj = self.da_in(da).unsqueeze(0)
 
     # Policy network
-    decoder_hidden = (F.tanh(da_proj + db_proj), F.tanh(da_proj + db_proj))
+    decoder_hidden = (da_proj, torch.zeros(da_proj.size()).cuda())
 
     # Decoder
     probas = torch.zeros(target_seq.size(0), target_seq.size(1), len(self.output_i2w))
@@ -1896,7 +1902,7 @@ class NLG(nn.Module):
 
     return probas
 
-  def train(self, target_seq, target_lens, db, da):
+  def train(self, target_seq, target_lens, db, da, no_prop=False):
     self.optim.zero_grad()
 
     # Forward
@@ -1904,6 +1910,8 @@ class NLG(nn.Module):
 
     # Loss
     loss = self.criterion(proba.view(-1, proba.size(-1)), target_seq.flatten())
+    if no_prop:
+      return loss
 
     # Backwards
     loss.backward()
@@ -1918,11 +1926,11 @@ class NLG(nn.Module):
 
     with torch.no_grad():
       # Encoder
-      db_proj = self.db_in(db)
-      da_proj = self.da_in(da)
+      db_proj = self.db_in(db).unsqueeze(0)
+      da_proj = self.da_in(da).unsqueeze(0)
 
       # Policy network
-      decoder_hidden = (F.tanh(da_proj + db_proj).unsqueeze(0), F.tanh(da_proj + db_proj).unsqueeze(0))
+      decoder_hidden = (F.tanh(da_proj), torch.zeros(da_proj.size()).cuda())
 
       # Decoder
       if self.args.use_cuda is True:
@@ -2011,7 +2019,7 @@ class E2E(nn.Module):
     encoder_outputs, encoder_hidden = self.encoder(input_seq, input_lens)
 
     # Policy network
-    decoder_hidden = (self.pnn(encoder_hidden[0], db), self.pnn(encoder_hidden[0], db))
+    decoder_hidden = (self.pnn(encoder_hidden[0], db), torch.zeros(encoder_hidden[0].size()).cuda())
 
     # Decoder
     probas = torch.zeros(target_seq.size(0), target_seq.size(1), len(self.output_i2w))
@@ -2030,7 +2038,7 @@ class E2E(nn.Module):
 
     return probas
 
-  def train(self, input_seq, input_lens, target_seq, target_lens, db, bs):
+  def train(self, input_seq, input_lens, target_seq, target_lens, db, bs, no_prop=False):
     self.optim.zero_grad()
 
     # Forward
@@ -2038,6 +2046,8 @@ class E2E(nn.Module):
 
     # Loss
     loss = self.criterion(proba.view(-1, proba.size(-1)), target_seq.flatten())
+    if no_prop:
+      return loss
 
     # Backwards
     loss.backward()
@@ -2055,7 +2065,7 @@ class E2E(nn.Module):
       encoder_outputs, encoder_hidden = self.encoder(input_seq, input_lens)
 
       # Policy network
-      decoder_hidden = (self.pnn(encoder_hidden[0], db), self.pnn(encoder_hidden[0], db))
+      decoder_hidden = (self.pnn(encoder_hidden[0], db), torch.zeros(encoder_hidden[0].size()).cuda())
 
       # Decoder
       if self.args.use_cuda is True:
@@ -2112,7 +2122,7 @@ class E2E(nn.Module):
       encoder_outputs, encoder_hidden = self.encoder(input_seq, input_lens)
 
       # Policy network
-      decoder_hidden = (self.pnn(encoder_hidden[0], db), self.pnn(encoder_hidden[0], db))
+      decoder_hidden = (self.pnn(encoder_hidden[0], db), torch.zeros(encoder_hidden[0].size()).cuda())
 
       # Decoder
       if self.args.use_cuda is True:
@@ -2158,3 +2168,43 @@ class E2E(nn.Module):
 
   def load(self, name):
     self.load_state_dict(torch.load(name+'.e2e').state_dict())
+
+class MultiTask(nn.Module):
+  def __init__(self, nlu, dm, nlg, e2e, args):
+    super(MultiTask, self).__init__()
+
+    # Model
+    self.nlu = nlu
+    self.dm = dm
+    self.nlg = nlg
+    self.e2e = e2e
+
+    self.optim = optim.Adam(lr=args.lr, params=self.parameters(), weight_decay=args.l2_norm)
+    self.args = args
+
+  def train(self, batch_rows):
+    self.optim.zero_grad()
+
+    # Train NLU
+    input_seq, input_lens, bs = self.nlu.prep_batch(batch_rows)
+    nlu_loss = self.nlu.train(input_seq, input_lens, bs, no_prop=True)
+
+    # Train DM
+    bs, da, db = self.dm.prep_batch(batch_rows)
+    dm_loss = self.dm.train(bs, da, db, no_prop=True)
+
+    # Train NLG
+    target_seq, target_lens, db, da = self.nlg.prep_batch(batch_rows)
+    nlg_loss = self.nlg.train(target_seq, target_lens, db, da, no_prop=True)
+
+    # Train E2E
+    input_seq, input_lens, target_seq, target_lens, db, bs = self.e2e.prep_batch(batch_rows)
+    e2e_loss = self.e2e.train(input_seq, input_lens, target_seq, target_lens, db, bs, no_prop=True)
+
+    # Combine loss and backprop
+    comb_loss = nlu_loss + dm_loss + nlg_loss + e2e_loss
+    comb_loss.backward()
+    torch.nn.utils.clip_grad_norm_(self.parameters(), self.args.clip)
+    self.optim.step()
+
+    return comb_loss.item()

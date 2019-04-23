@@ -5,7 +5,7 @@ import model
 import random
 import subprocess
 
-from collections import defaultdict
+from collections import defaultdict, Counter
 #from evaluate_model import evaluateModel
 
 import numpy as np
@@ -35,7 +35,7 @@ parser.add_argument('--emb_size', type=int, default=50)
 parser.add_argument('--hid_size', type=int, default=150)
 parser.add_argument('--db_size', type=int, default=30)
 parser.add_argument('--bs_size', type=int, default=94)
-parser.add_argument('--da_size', type=int, default=31)
+parser.add_argument('--da_size', type=int, default=303)
 
 parser.add_argument('--lr', type=float, default=0.005)
 parser.add_argument('--l2_norm', type=float, default=0.00001)
@@ -76,15 +76,15 @@ def load_data(filename, dial_acts_data, dial_act_dict):
         if turn != "No Annotation":
           for act_type, slots in turn.items():
             for slot in slots:
-              act = act_type + "_" + slot[0]
-              da[dial_act_dict[act]] = 1.0
+              das = [act_type, slot[0], slot[1]]
+              for act in das:
+                if act in dial_act_dict:
+                  da[dial_act_dict[act]] = 1.0
 
       rows.append((input_seq, target_seq, db, bs, da, file, i))
 
-      # Add sys output
-      input_so_far += target_seq
-
   return rows
+
 
 def get_dial_acts(filename):
 
@@ -97,10 +97,14 @@ def get_dial_acts(filename):
       for dial_act_type, slots in turn.items():
         for slot in slots:
           dial_act = dial_act_type + "_" + slot[0]
-          if dial_act not in dial_acts:
-            dial_acts.append(dial_act)
-  print(dial_acts, len(dial_acts))
-  return dict(zip(dial_acts, range(len(dial_acts)))), data
+
+
+          dial_acts.append(dial_act_type)
+          dial_acts.append(slot[0])
+          dial_acts.append(slot[1])
+  dial_acts_dict = {e:i for i,e in enumerate([k for k,v in Counter(dial_acts).items() if v > 50  ])}
+  print(dial_acts_dict, len(dial_acts_dict))
+  return dial_acts_dict, data
 
 def get_belief_state_domains(bs):
   doms = []
@@ -402,7 +406,7 @@ for batch in range(num_test_batches):
   elif args.nlg_predictor:
     target_seq, target_lens, db, da = model.prep_batch(batch_rows)
     # Get predicted sentences for batch
-    predicted_sentences = model.decode(input_seq, input_lens, 50, db, bs)
+    predicted_sentences = model.decode(50, db, da)
 
     # Add predicted to list
     for i,sent in enumerate(predicted_sentences):

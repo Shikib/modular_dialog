@@ -5,6 +5,8 @@ import model
 import random
 import sys
 
+from collections import Counter
+
 def str2bool(v):
   if v.lower() in ('yes', 'true', 't', 'y', '1'):
     return True
@@ -31,7 +33,7 @@ parser.add_argument('--emb_size', type=int, default=50)
 parser.add_argument('--hid_size', type=int, default=150)
 parser.add_argument('--db_size', type=int, default=30)
 parser.add_argument('--bs_size', type=int, default=94)
-parser.add_argument('--da_size', type=int, default=31)
+parser.add_argument('--da_size', type=int, default=303)
 
 parser.add_argument('--lr', type=float, default=0.005)
 parser.add_argument('--l2_norm', type=float, default=0.00001)
@@ -79,8 +81,10 @@ def load_data(filename, dial_acts_data, dial_act_dict):
         if turn != "No Annotation":
           for act_type, slots in turn.items():
             for slot in slots:
-              act = act_type + "_" + slot[0]
-              da[dial_act_dict[act]] = 1.0
+              das = [act_type, slot[0], slot[1]]
+              for act in das:
+                if act in dial_act_dict:
+                  da[dial_act_dict[act]] = 1.0
 
       rows.append((input_seq, target_seq, db, bs, da))
 
@@ -146,7 +150,6 @@ def load_domain_data(filename, domains, exclude=False):
   return rows
 
 def get_dial_acts(filename):
-
   data = json.load(open(filename))
   dial_acts = []
   for dial in data.values():
@@ -156,11 +159,13 @@ def get_dial_acts(filename):
       for dial_act_type, slots in turn.items():
         for slot in slots:
           dial_act = dial_act_type + "_" + slot[0]
-          if dial_act not in dial_acts:
-            dial_acts.append(dial_act)
-  print(dial_acts, len(dial_acts))
-  return dict(zip(dial_acts, range(len(dial_acts)))), data
 
+          dial_acts.append(dial_act_type)
+          dial_acts.append(slot[0])
+          dial_acts.append(slot[1])
+  dial_acts_dict = {e:i for i,e in enumerate([k for k,v in Counter(dial_acts).items() if v > 50  ])}
+  print(dial_acts_dict, len(dial_acts_dict))
+  return dial_acts_dict, data
 
 # Load vocabulary
 input_w2i = json.load(open('data/input_lang.word2index.json'))
@@ -256,6 +261,13 @@ elif args.multitask:
                   input_w2i=input_w2i,
                   output_w2i=output_w2i,
                   args=args).cuda()
+
+  # MultiTask
+  multi_task = model.MultiTask(nlu=nlu,
+                               dm=dm,
+                               nlg=nlg,
+                               e2e=e2e,
+                               args=args).cuda()
   
 #if args.use_cuda is True:
 #  model = model.cuda()
@@ -293,28 +305,29 @@ for epoch in range(args.num_epochs):
     batch_rows = [train[i] for i in batch_indices]
 
     if args.multitask:
-      # Train NLU
-      input_seq, input_lens, bs = nlu.prep_batch(batch_rows)
-      cum_loss += nlu.train(input_seq, input_lens, bs)
+      ## Train NLU
+      #input_seq, input_lens, bs = nlu.prep_batch(batch_rows)
+      #cum_loss += nlu.train(input_seq, input_lens, bs)
 
-      # Train DM
-      bs, da, db = dm.prep_batch(batch_rows)
-      cum_loss += dm.train(bs, da, db)
+      ## Train DM
+      #bs, da, db = dm.prep_batch(batch_rows)
+      #cum_loss += dm.train(bs, da, db)
 
-      # Train NLG
-      target_seq, target_lens, db, da = nlg.prep_batch(batch_rows)
-      cum_loss += nlg.train(target_seq, target_lens, db, da)
+      ## Train NLG
+      #target_seq, target_lens, db, da = nlg.prep_batch(batch_rows)
+      #cum_loss += nlg.train(target_seq, target_lens, db, da)
 
-      # Train E2E
-      input_seq, input_lens, target_seq, target_lens, db, bs = e2e.prep_batch(batch_rows)
-      cum_loss += e2e.train(input_seq, input_lens, target_seq, target_lens, db, bs)
+      ## Train E2E
+      #input_seq, input_lens, target_seq, target_lens, db, bs = e2e.prep_batch(batch_rows)
+      #cum_loss += e2e.train(input_seq, input_lens, target_seq, target_lens, db, bs)
+      cum_loss += multi_task.train(batch_rows)
     else:
       if args.bs_predictor:
         input_seq, input_lens, bs = model.prep_batch(batch_rows)
         cum_loss += model.train(input_seq, input_lens, bs)
       elif args.dm_predictor:
-        bs, da = model.prep_batch(batch_rows)
-        cum_loss += model.train(bs, da)
+        bs, da, db = model.prep_batch(batch_rows)
+        cum_loss += model.train(bs, da, db)
       elif args.nlg_predictor:
         target_seq, target_lens, db, da = model.prep_batch(batch_rows)
         cum_loss += model.train(target_seq, target_lens, db, da)

@@ -31,6 +31,7 @@ parser.add_argument('--emb_size', type=int, default=50)
 parser.add_argument('--hid_size', type=int, default=150)
 parser.add_argument('--db_size', type=int, default=30)
 parser.add_argument('--bs_size', type=int, default=94)
+parser.add_argument('--da_size', type=int, default=31)
 
 parser.add_argument('--lr', type=float, default=0.005)
 parser.add_argument('--l2_norm', type=float, default=0.00001)
@@ -40,6 +41,9 @@ parser.add_argument('--shallow_fusion', type=str2bool, const=True, nargs='?', de
 parser.add_argument('--deep_fusion', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--cold_fusion', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--bs_predictor', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--dm_predictor', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--s2s_predictor', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--multitask', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--load_lm', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--lm_name', type=str, default='baseline')
 parser.add_argument('--s2s_name', type=str, default='baseline')
@@ -48,6 +52,8 @@ parser.add_argument('--s2s_name', type=str, default='baseline')
 parser.add_argument('--data_size', type=float, default=-1.0)
 
 args = parser.parse_args()
+
+assert args.dm_predictor or args.bs_predictor or args.s2s_predictor or args.multitask, "Must turn on one training flag"
 
 def load_data(filename, dial_acts_data, dial_act_dict):
   data = json.load(open(filename))
@@ -154,8 +160,6 @@ def get_dial_acts(filename):
 # Load vocabulary
 input_w2i = json.load(open('data/input_lang.word2index.json'))
 output_w2i = json.load(open('data/output_lang.word2index.json'))
-
-
 dial_act_dict, dial_acts_data = get_dial_acts('data/multi-woz/dialogue_acts.json')
 
 # Create models
@@ -172,86 +176,63 @@ decoder = model.Decoder(emb_size=args.emb_size,
                         vocab_size=len(output_w2i),
                         use_attn=args.use_attn)
 
-if args.shallow_fusion or args.deep_fusion:
-  s2s = model.Model(encoder=encoder,
-                    policy=policy,
-                    decoder=decoder,
-                    input_w2i=input_w2i,
-                    output_w2i=output_w2i,
-                    args=args)
-  s2s.load(args.s2s_name)
-  lm_decoder = model.Decoder(emb_size=args.emb_size,
-                             hid_size=args.hid_size,
-                             vocab_size=len(output_w2i),
-                             use_attn=False)
-  lm = model.LanguageModel(decoder=lm_decoder,
-                           input_w2i=input_w2i,
-                           output_w2i=output_w2i,
-                           args=args)
-  lm.load(args.lm_name)
-  if args.shallow_fusion:
-    model = model.ShallowFusionModel(s2s, lm, args)
-    model.save(args.model_name + '_0')
-  elif args.deep_fusion:
-    model = model.DeepFusionModel(s2s, lm, args)
-elif args.cold_fusion:
-  s2s = model.Model(encoder=encoder,
-                    policy=policy,
-                    decoder=decoder,
-                    input_w2i=input_w2i,
-                    output_w2i=output_w2i,
-                    args=args)
-  lm_decoder = model.Decoder(emb_size=args.emb_size,
-                             hid_size=args.hid_size,
-                             vocab_size=len(output_w2i),
-                             use_attn=False)
-  lm = model.LanguageModel(decoder=lm_decoder,
-                           input_w2i=input_w2i,
-                           output_w2i=output_w2i,
-                           args=args)
-  lm.load(args.lm_name)
-  cf = model.ColdFusionLayer(hid_size=args.hid_size,
-                             vocab_size=len(output_w2i))
-  model = model.ColdFusionModel(s2s, lm, cf, args)
-elif args.bs_predictor:
+
+if args.bs_predictor:
   model = model.BeliefStatePredictor(encoder=encoder,
                                      hid_size=args.hid_size,
                                      bs_size=args.bs_size,
                                      input_w2i=input_w2i,
                                      args=args)
-elif args.load_lm:
-  lm_decoder = model.Decoder(emb_size=args.emb_size,
-                             hid_size=args.hid_size,
-                             vocab_size=len(output_w2i),
-                             use_attn=False)
-  lm = model.LanguageModel(decoder=lm_decoder,
-                           input_w2i=input_w2i,
-                           output_w2i=output_w2i,
-                           args=args)
-  lm.load(args.lm_name)
-  model = model.Model(encoder=encoder,
-                      policy=policy,
-                      decoder=lm.decoder,
-                      input_w2i=input_w2i,
-                      output_w2i=output_w2i,
-                      args=args)
-elif not args.train_lm:
+elif args.dm_predictor:
+  model = model.DMPredictor(bs_size=args.bs_size,
+                            da_size=args.da_size,
+                            args=args)
+elif args.s2s_predictor:
   model = model.Model(encoder=encoder,
                       policy=policy,
                       decoder=decoder,
                       input_w2i=input_w2i,
                       output_w2i=output_w2i,
                       args=args)
-else:
-  model = model.LanguageModel(decoder=decoder,
-                              input_w2i=input_w2i,
-                              output_w2i=output_w2i,
-                              args=args)
+
+if args.multitask:
+  # Base components
+  encoder = model.Encoder(vocab_size=len(input_w2i), 
+                          emb_size=args.emb_size, 
+                          hid_size=args.hid_size)
+
+  pnn = model.PNN(hidden_size=args.hid_size,
+                  db_size=args.db_size)
+
+  decoder = model.Decoder(emb_size=args.emb_size,
+                          hid_size=args.hid_size,
+                          vocab_size=len(output_w2i),
+                          use_attn=args.use_attn)
   
-if args.use_cuda is True:
-  model = model.cuda()
+  # NLU
+  nlu = model.NLU(encoder=encoder,
+                  input_w2i=input_w2i,
+                  args=args).cuda()
 
+  # DM
+  dm = model.DM(pnn=pnn,
+                args=args).cuda()
 
+  # NLG
+  nlg = model.NLG(decoder=decoder,
+                  output_w2i=output_w2i,
+                  args=args).cuda()
+
+  # E2E
+  e2e = model.E2E(encoder=encoder,
+                  pnn=pnn,
+                  decoder=decoder,
+                  input_w2i=input_w2i,
+                  output_w2i=output_w2i,
+                  args=args).cuda()
+  
+#if args.use_cuda is True:
+#  model = model.cuda()
 
 # Load data
 train = load_data('data/train_dials.json', dial_acts_data, dial_act_dict)
@@ -285,16 +266,42 @@ for epoch in range(args.num_epochs):
     batch_indices = indices[batch*args.batch_size:(batch+1)*args.batch_size]
     batch_rows = [train[i] for i in batch_indices]
 
-    if args.bs_predictor:
-      input_seq, input_lens, bs = model.prep_batch(batch_rows)
-      cum_loss += model.train(input_seq, input_lens, bs)
+    if args.multitask:
+      # Train NLU
+      input_seq, input_lens, bs = nlu.prep_batch(batch_rows)
+      cum_loss += nlu.train(input_seq, input_lens, bs)
+
+      # Train DM
+      bs, da, db = dm.prep_batch(batch_rows)
+      cum_loss += dm.train(bs, da, db)
+
+      # Train NLG
+      target_seq, target_lens, db, da = nlg.prep_batch(batch_rows)
+      cum_loss += nlg.train(target_seq, target_lens, db, da)
+
+      # Train E2E
+      input_seq, input_lens, target_seq, target_lens, db, bs = e2e.prep_batch(batch_rows)
+      cum_loss += e2e.train(input_seq, input_lens, target_seq, target_lens, db, bs)
     else:
-      input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
-      # Train batch
-      cum_loss += model.train(input_seq, input_lens, target_seq, target_lens, db, bs)
+      if args.bs_predictor:
+        input_seq, input_lens, bs = model.prep_batch(batch_rows)
+        cum_loss += model.train(input_seq, input_lens, bs)
+      elif args.dm_predictor:
+        bs, da = model.prep_batch(batch_rows)
+        cum_loss += model.train(bs, da)
+      else:
+        input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
+        # Train batch
+        cum_loss += model.train(input_seq, input_lens, target_seq, target_lens, db, bs)
 
     # Log batch if needed
     if batch > 0 and batch % 50 == 0:
       print("Epoch {0}/{1} Batch {2}/{3} Avg Loss {4:.2f}".format(epoch+1, args.num_epochs, batch, num_batches, cum_loss/(batch+1)))
 
-  model.save("{0}_{1}".format(args.model_name, epoch))
+  if args.multitask:
+    nlu.save("{0}_{1}".format(args.model_name, epoch))
+    dm.save("{0}_{1}".format(args.model_name, epoch))
+    nlg.save("{0}_{1}".format(args.model_name, epoch))
+    e2e.save("{0}_{1}".format(args.model_name, epoch))
+  else:
+    model.save("{0}_{1}".format(args.model_name, epoch))

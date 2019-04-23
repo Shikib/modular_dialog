@@ -35,6 +35,7 @@ parser.add_argument('--emb_size', type=int, default=50)
 parser.add_argument('--hid_size', type=int, default=150)
 parser.add_argument('--db_size', type=int, default=30)
 parser.add_argument('--bs_size', type=int, default=94)
+parser.add_argument('--da_size', type=int, default=31)
 
 parser.add_argument('--lr', type=float, default=0.005)
 parser.add_argument('--l2_norm', type=float, default=0.00001)
@@ -44,6 +45,7 @@ parser.add_argument('--shallow_fusion', type=str2bool, const=True, nargs='?', de
 parser.add_argument('--deep_fusion', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--cold_fusion', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--bs_predictor', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--dm_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--lm_name', type=str, default='baseline')
 parser.add_argument('--s2s_name', type=str, default='baseline')
 
@@ -216,6 +218,10 @@ elif args.bs_predictor:
                                      bs_size=args.bs_size,
                                      input_w2i=input_w2i,
                                      args=args)
+elif args.dm_predictor:
+  model = model.DMPredictor(bs_size=args.bs_size,
+                            da_size=args.da_size,
+                            args=args)
 elif not args.test_lm:
   model = model.Model(encoder=encoder,
                       policy=policy,
@@ -280,7 +286,11 @@ for epoch in range(20):
     if args.bs_predictor:
       input_seq, input_lens, bs = model.prep_batch(batch_rows)
       predicted_bs = model.predict(input_seq, input_lens)
-      bs_predictions.append((predicted_bs.reshape(-1).data.cpu().numpy(), bs.reshape(-1).data.cpu().numpy()))
+      bs_predictions.append((predicted_bs.data.cpu().numpy(), bs.data.cpu().numpy()))
+    elif args.dm_predictor:
+      bs, da = model.prep_batch(batch_rows)
+      predicted_da = model.predict(bs)
+      bs_predictions.append((predicted_da.data.cpu().numpy(), da.data.cpu().numpy()))
     else:
       input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
 
@@ -296,7 +306,11 @@ for epoch in range(20):
   if args.bs_predictor:
     bs_preds = np.concatenate([x[0] for x in bs_predictions])
     bs_true = np.concatenate([x[1] for x in bs_predictions])
-    val_score = f1_score(bs_true, bs_preds)
+    val_score = f1_score(bs_true, bs_preds, average="samples")
+  elif args.dm_predictor:
+    da_preds = np.concatenate([x[0] for x in bs_predictions])
+    da_true = np.concatenate([x[1] for x in bs_predictions])
+    val_score = f1_score(da_true, da_preds, average="samples")
   else:
     if args.domain:
       out = subprocess.check_output("python2.7 evaluate.py --pred temp.json --target temp_true.json".split())
@@ -308,7 +322,7 @@ for epoch in range(20):
   #val_score = evaluateModel(all_predicted, val_targets, mode='val')
   print("Epoch {0}: Validation Score {1:.10f}".format(epoch, val_score))
   print("-----------------------------------")
-  if not args.bs_predictor:
+  if not (args.bs_predictor or args.dm_predictor):
     print(out.decode().split('|')[0] + '\n')
 
   if val_score > best_val_score:
@@ -336,6 +350,10 @@ for batch in range(num_test_batches):
     input_seq, input_lens, bs = model.prep_batch(batch_rows)
     predicted_bs = model.predict(input_seq, input_lens)
     bs_predictions.append((predicted_bs.reshape(-1).data.cpu().numpy(), bs.reshape(-1).data.cpu().numpy()))
+  elif args.dm_predictor:
+    bs, da = model.prep_batch(batch_rows)
+    predicted_da = model.predict(bs)
+    bs_predictions.append((predicted_da.data.cpu().numpy(), da.data.cpu().numpy()))
   else:
     input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
 
@@ -350,7 +368,12 @@ for batch in range(num_test_batches):
 if args.bs_predictor:
   bs_preds = np.concatenate([x[0] for x in bs_predictions])
   bs_true = np.concatenate([x[1] for x in bs_predictions])
-  test_score = f1_score(bs_true, bs_preds)
+  test_score = f1_score(bs_true, bs_preds, average="samples")
+  print("Test score:", test_score)
+elif args.dm_predictor:
+  da_preds = np.concatenate([x[0] for x in bs_predictions])
+  da_true = np.concatenate([x[1] for x in bs_predictions])
+  test_score = f1_score(da_true, da_preds, average="samples")
   print("Test score:", test_score)
 else:
   json.dump(all_predicted, open('temp.json', 'w+'))

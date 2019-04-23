@@ -1332,6 +1332,153 @@ class ColdFusionModel(nn.Module):
 
 
 
+class DialogActToResponseGeneration(nn.Module):
+
+  def __init__(self, decoder, hid_size, da_size, db_size, output_w2i, args):
+
+    super(DialogActToResponseGeneration, self).__init__()
+
+    self.args = args
+
+    self.proj_da = nn.Linear(da_size, hid_size)   # dialog act projection
+    self.proj_db = nn.Linear(db_size, hid_size)   # Database projection
+    self.decoder = decoder
+
+    # Vocab
+    self.output_i2w = sorted(output_w2i, key=output_w2i.get)
+    self.output_w2i = output_w2i
+
+    # Training
+    self.criterion = nn.NLLLoss(ignore_index=3, size_average=True)
+    self.optim = optim.Adam(lr=args.lr, params=self.parameters(), weight_decay=args.l2_norm)
+
+
+  def prep_batch(self, rows, hierarchical=True):
+    def _pad(arr, pad=3):
+      # Given an array of integer arrays, pad all arrays to the same length
+      lengths = [len(e) for e in arr]
+      max_len = max(lengths)
+      return [e+[pad]*(max_len-len(e)) for e in arr], lengths
+
+    targets = [[self.output_w2i.get(w, self.output_w2i['_UNK']) for w in row[1]] for row in rows]
+    target_seq, target_lens = _pad(targets, pad=self.output_w2i['_PAD'])
+    if self.args.use_cuda is True:
+      target_seq = torch.cuda.LongTensor(target_seq).t()
+    else:
+      target_seq = torch.LongTensor(target_seq).t()
+
+    if self.args.use_cuda is True:
+      db = torch.cuda.FloatTensor([[int(e) for e in row[2]] for row in rows])
+      da = torch.cuda.FloatTensor([[int(e) for e in row[4]] for row in rows])
+    else:
+      db = torch.FloatTensor([[int(e) for e in row[2]] for row in rows])
+      da = torch.FloatTensor([[int(e) for e in row[4]] for row in rows])
+
+    return target_seq, target_lens, db, da
+
+
+  def forward(self, target_seq, target_lens, db, da):
+
+    db_proj = self.db_proj(db)
+    da_proj = self.da_proj(da)
+
+    # Policy network
+    decoder_hidden = F.tanh(da_proj + db_proj)
+
+    # Decoder
+    probas = torch.zeros(target_seq.size(0), target_seq.size(1), len(self.output_i2w))
+    if self.args.use_cuda is True:
+      probas = probas.cuda()
+    last_word = target_seq[0].unsqueeze(0)
+    for t in range(1,target_seq.size(0)):
+      # Pass through decoder
+      decoder_output, decoder_hidden = self.decoder(decoder_hidden, last_word, encoder_outputs)
+
+      # Save output
+      probas[t] = decoder_output
+
+      # Set new last word
+      last_word = target_seq[t].unsqueeze(0)
+
+    return probas
+
+
+  def train(self, target_seq, target_lens, db, da):
+    self.optim.zero_grad()
+
+    # Forward
+    proba = self.forward(target_seq, target_lens, db, da)
+
+    # Loss
+    loss = self.criterion(proba.view(-1, proba.size(-1)), target_seq.flatten())
+
+    # Backwards
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(self.parameters(), self.args.clip)
+    self.optim.step()
+
+    return loss.item()
+
+  def decode(self, max_len, db, da):
+    batch_size = len(db)
+    predictions = torch.zeros((batch_size, max_len))
+
+    with torch.no_grad():
+      # Encoder
+      db_proj = self.db_proj(db)
+      da_proj = self.da_proj(da)
+
+      # Policy network
+      decoder_hidden = F.tanh(da_proj + db_proj)
+
+      # Decoder
+      if self.args.use_cuda is True:
+        last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(len(input_seq))]])
+      else:
+        last_word = torch.LongTensor([[self.output_w2i['_GO'] for _ in range(len(input_seq))]])
+      for t in range(max_len):
+        # Pass through decoder
+        decoder_output, decoder_hidden = self.decoder(decoder_hidden, last_word, encoder_outputs)
+
+        # Get top candidates
+        topv, topi = decoder_output.data.topk(1)
+        topi = topi.view(-1)
+
+        predictions[:, t] = topi
+
+        # Set new last word
+        last_word = topi.detach().view(1, -1)
+
+    predicted_sentences = []
+    for sentence in predictions:
+      sent = []
+      for ind in sentence:
+        word = self.output_i2w[ind.long().item()]
+        if word == '_EOS':
+          break
+        sent.append(word)
+      predicted_sentences.append(' '.join(sent))
+
+    return predicted_sentences
+
+  def beam_decode(self, max_len, db, da, beam_width=10):
+    def _to_cpu(x):
+      if type(x) in [tuple, list]:
+        return [e.cpu() for e in x]
+      else:
+        return x.cpu()
+
+  def save(self, name):
+    torch.save(self, name+'.da2resp')
+
+
+  def load(self, name):
+    self.load_state_dict(torch.load(name+'.da2resp').state_dict())
+
+
+
+
+
 #class ColdFusionModel(nn.Module):
 #  def __init__(self, encoder, policy, decoder, lm, input_w2i, output_w2i, args):
 #    super(ColdFusionModel, self).__init__()

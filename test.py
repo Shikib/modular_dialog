@@ -46,6 +46,7 @@ parser.add_argument('--deep_fusion', type=str2bool, const=True, nargs='?', defau
 parser.add_argument('--cold_fusion', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--bs_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--dm_predictor', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--multitask', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--lm_name', type=str, default='baseline')
 parser.add_argument('--s2s_name', type=str, default='baseline')
 
@@ -75,7 +76,7 @@ def load_data(filename, dial_acts_data, dial_act_dict):
           for act in turn.keys():
             da[dial_act_dict[act]] = 1.0
 
-      rows.append((input_seq, target_seq, db, bs, da))
+      rows.append((input_seq, target_seq, db, bs, da, file, i))
 
       # Add sys output
       input_so_far += target_seq
@@ -222,6 +223,27 @@ elif args.dm_predictor:
   model = model.DMPredictor(bs_size=args.bs_size,
                             da_size=args.da_size,
                             args=args)
+elif args.multitask:
+  # Base components
+  encoder = model.Encoder(vocab_size=len(input_w2i),
+                          emb_size=args.emb_size,
+                          hid_size=args.hid_size)
+
+  pnn = model.PNN(hidden_size=args.hid_size,
+                  db_size=args.db_size)
+
+  decoder = model.Decoder(emb_size=args.emb_size,
+                          hid_size=args.hid_size,
+                          vocab_size=len(output_w2i),
+                          use_attn=args.use_attn)
+
+  # Model
+  model = model.E2E(encoder=encoder,
+                    pnn=pnn,
+                    decoder=decoder,
+                    input_w2i=input_w2i,
+                    output_w2i=output_w2i,
+                    args=args)
 elif not args.test_lm:
   model = model.Model(encoder=encoder,
                       policy=policy,
@@ -301,7 +323,7 @@ for epoch in range(20):
       for i,sent in enumerate(predicted_sentences):
         all_predicted[batch_rows[i][-2]].append(sent) 
 
-  # json.dump(all_predicted, open('temp.json', 'w+'))
+  json.dump(all_predicted, open('temp.json', 'w+'))
 
   if args.bs_predictor:
     bs_preds = np.concatenate([x[0] for x in bs_predictions])

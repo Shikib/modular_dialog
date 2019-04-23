@@ -77,8 +77,10 @@ def load_data(filename, dial_acts_data, dial_act_dict):
         turn = dial_turns[str(i+1)]
         da = [0.0]*len(dial_act_dict)
         if turn != "No Annotation":
-          for act in turn.keys():
-            da[dial_act_dict[act]] = 1.0
+          for act_type, slots in turn.items():
+            for slot in slots:
+              act = act_type + "_" + slot[0]
+              da[dial_act_dict[act]] = 1.0
 
       rows.append((input_seq, target_seq, db, bs, da))
 
@@ -151,9 +153,11 @@ def get_dial_acts(filename):
     for turn in dial.values():
       if turn == "No Annotation":
         continue
-      for dial_act in turn.keys():
-        if dial_act not in dial_acts:
-          dial_acts.append(dial_act)
+      for dial_act_type, slots in turn.items():
+        for slot in slots:
+          dial_act = dial_act_type + "_" + slot[0]
+          if dial_act not in dial_acts:
+            dial_acts.append(dial_act)
   print(dial_acts, len(dial_acts))
   return dict(zip(dial_acts, range(len(dial_acts)))), data
 

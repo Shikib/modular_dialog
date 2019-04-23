@@ -31,7 +31,7 @@ parser.add_argument('--emb_size', type=int, default=50)
 parser.add_argument('--hid_size', type=int, default=150)
 parser.add_argument('--db_size', type=int, default=30)
 parser.add_argument('--bs_size', type=int, default=94)
-parser.add_argument('--da_size', type=int, default=31)
+parser.add_argument('--da_size', type=int, default=593)
 
 parser.add_argument('--lr', type=float, default=0.005)
 parser.add_argument('--l2_norm', type=float, default=0.00001)

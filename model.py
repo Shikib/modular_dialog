@@ -113,20 +113,24 @@ class PNN(nn.Module):
     return F.tanh(output)
 
 class Decoder(nn.Module):
-  def __init__(self, emb_size, hid_size, vocab_size, use_attn=True):
+  def __init__(self, emb_size, hid_size, vocab_size, use_attn=True, concat_da=False):
     super(Decoder, self).__init__()
     self.embedding = nn.Embedding(vocab_size, emb_size)
     self.out = nn.Linear(hid_size, vocab_size)
     self.use_attn = use_attn
     self.hid_size = hid_size
+    self.concat_da = concat_da
     if use_attn:
-      self.decoder = nn.LSTM(emb_size+hid_size, hid_size)
+      if concat_da:
+        self.decoder = nn.LSTM(emb_size+2*hid_size, hid_size)
+      else:
+        self.decoder = nn.LSTM(emb_size+hid_size, hid_size)
       self.W_a = nn.Linear(hid_size * 2, hid_size)
       self.v = nn.Linear(hid_size, 1)
     else:
       self.decoder = nn.LSTM(emb_size, hid_size)
 
-  def forward(self, hidden, last_word, encoder_outputs, ret_out=False):
+  def forward(self, hidden, last_word, encoder_outputs, da=None, ret_out=False):
     if not self.use_attn:
       embedded = self.embedding(last_word)
       output, hidden = self.decoder(embedded, hidden)
@@ -137,6 +141,9 @@ class Decoder(nn.Module):
     else:
       embedded = self.embedding(last_word)
 
+      if self.concat_da:
+        embedded = torch.cat((embedded, da), dim=2)
+ 
       # Attn
       h = hidden[0].repeat(encoder_outputs.size(0), 1, 1)
       attn_energy = F.tanh(self.W_a(torch.cat((h, encoder_outputs), dim=2)))
@@ -1886,7 +1893,7 @@ class NLG(nn.Module):
     last_word = target_seq[0].unsqueeze(0)
     for t in range(1,target_seq.size(0)):
       # Pass through decoder
-      decoder_output, decoder_hidden = self.decoder(decoder_hidden, last_word, None)
+      decoder_output, decoder_hidden = self.decoder(decoder_hidden, last_word, None, da_proj)
 
       # Save output
       probas[t] = decoder_output
@@ -1931,7 +1938,7 @@ class NLG(nn.Module):
         last_word = torch.LongTensor([[self.output_w2i['_GO'] for _ in range(batch_size)]])
       for t in range(max_len):
         # Pass through decoder
-        decoder_output, decoder_hidden = self.decoder(decoder_hidden, last_word, None)
+        decoder_output, decoder_hidden = self.decoder(decoder_hidden, last_word, None, da_proj)
 
         # Get top candidates
         topv, topi = decoder_output.data.topk(1)

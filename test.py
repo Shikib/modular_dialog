@@ -30,6 +30,7 @@ parser.add_argument('--model_name', type=str, default='baseline')
 parser.add_argument('--use_cuda', type=bool, default=True)
 parser.add_argument('--domain', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--test_lm', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--concat_da', type=str2bool, default=False)
 
 parser.add_argument('--emb_size', type=int, default=50)
 parser.add_argument('--hid_size', type=int, default=150)
@@ -243,7 +244,8 @@ elif args.nlg_predictor:
   decoder = model.Decoder(emb_size=args.emb_size,
                           hid_size=args.hid_size,
                           vocab_size=len(output_w2i),
-                          use_attn=args.use_attn)
+                          use_attn=args.use_attn,
+                          concat_da=args.concat_da)
   model = model.NLG(decoder=decoder,
                     output_w2i=output_w2i,
                     args=args)
@@ -411,7 +413,7 @@ for batch in range(num_test_batches):
   elif args.nlg_predictor:
     target_seq, target_lens, db, da = model.prep_batch(batch_rows)
     # Get predicted sentences for batch
-    predicted_sentences = model.decode(input_seq, input_lens, 50, db, bs)
+    predicted_sentences = model.decode(50, db, da)
 
     # Add predicted to list
     for i,sent in enumerate(predicted_sentences):

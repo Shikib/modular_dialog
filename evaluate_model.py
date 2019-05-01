@@ -111,6 +111,7 @@ def evaluateModel(dialogues, val_dials, mode='valid'):
         print 'Total number of dialogues: %s ' % total
 
     weighted_score = 0.5*((matches / float(total) * 100)) + 0.5*((successes / float(total) * 100)) + 100*(bscorer.score(model_corpus, corpus))
+    #weighted_score = 100*(bscorer.score(model_corpus, corpus))
     print("|{0}".format(weighted_score))
     return weighted_score
 

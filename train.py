@@ -58,6 +58,51 @@ args = parser.parse_args()
 
 assert args.dm_predictor or args.bs_predictor or args.s2s_predictor or args.nlg_predictor or args.multitask, "Must turn on one training flag"
 
+#def load_data(filename, dial_acts_data, dial_act_dict):
+#  data = json.load(open(filename))
+#  rows = []
+#  for file, dial in data.items():
+#    input_so_far = []
+#    for i in range(len(dial['sys'])):
+#      input_so_far += ['_GO'] + dial['usr'][i].strip().split() + ['_EOS']
+#
+#      input_seq = [e for e in input_so_far]
+#      target_seq = ['_GO'] + dial['sys'][i].strip().split() + ['_EOS']
+#      db = dial['db'][i]
+#      bs = dial['bs'][i]
+#
+#      # Get dialog acts
+#      dial_turns = dial_acts_data[file.strip('.json')]
+#      if str(i+1) not in dial_turns.keys():
+#        da = [0.0]*len(dial_act_dict)
+#      else:
+#        turn = dial_turns[str(i+1)]
+#        da = [0.0]*len(dial_act_dict)
+#        if turn != "No Annotation":
+#          for act in turn.keys():
+#            da[dial_act_dict[act]] = 1.0
+#
+#      rows.append((input_seq, target_seq, db, bs, da))
+#
+#      # Add sys output
+#      input_so_far += target_seq
+#
+#  return rows
+#
+#def get_dial_acts(filename):
+#
+#  data = json.load(open(filename))
+#  dial_acts = []
+#  for dial in data.values():
+#    for turn in dial.values():
+#      if turn == "No Annotation":
+#        continue
+#      for dial_act in turn.keys():
+#        if dial_act not in dial_acts:
+#          dial_acts.append(dial_act)
+#  print(dial_acts, len(dial_acts))
+#  return dict(zip(dial_acts, range(len(dial_acts)))), data
+
 def load_data(filename, dial_acts_data, dial_act_dict):
   data = json.load(open(filename))
   rows = []
@@ -171,9 +216,6 @@ def get_dial_acts(filename):
   # print(dial_acts, len(dial_acts))
   # return dict(zip(dial_acts, range(len(dial_acts)))), data
 
-          dial_acts.append(dial_act_type)
-          dial_acts.append(slot[0])
-          dial_acts.append(slot[1])
   dial_acts_dict = {e:i for i,e in enumerate([k for k,v in Counter(dial_acts).items() if v > 50  ])}
   print(dial_acts_dict, len(dial_acts_dict))
   return dial_acts_dict, data
@@ -191,12 +233,18 @@ encoder = model.Encoder(vocab_size=len(input_w2i),
 
 policy = model.Policy(hidden_size=args.hid_size,
                       db_size=args.db_size,
-                      bs_size=args.bs_size)
+                      bs_size=args.bs_size,
+                      da_size=args.da_size)
 
 decoder = model.Decoder(emb_size=args.emb_size,
                         hid_size=args.hid_size,
                         vocab_size=len(output_w2i),
                         use_attn=args.use_attn)
+
+nlg_decoder = model.Decoder(emb_size=args.emb_size,
+                            hid_size=args.hid_size,
+                            vocab_size=len(output_w2i),
+                            use_attn=args.use_attn)
 
 
 if args.bs_predictor:
@@ -207,8 +255,10 @@ if args.bs_predictor:
                     input_w2i=input_w2i,
                     args=args).cuda()
 elif args.dm_predictor:
-  pnn = model.PNN(hidden_size=args.hid_size,
-                  db_size=args.db_size)
+  pnn = model.PolicySmall(hidden_size=args.hid_size,
+                          db_size=args.db_size,
+                          bs_size=args.bs_size,
+                          da_size=args.da_size)
   model = model.DM(pnn=pnn,
                    args=args).cuda()
 elif args.nlg_predictor:
@@ -225,61 +275,88 @@ elif args.s2s_predictor:
                           emb_size=args.emb_size, 
                           hid_size=args.hid_size)
 
-  pnn = model.PNN(hidden_size=args.hid_size,
-                  db_size=args.db_size)
+  #pnn = model.PNN(hidden_size=args.hid_size,
+  #                db_size=args.db_size)
 
   decoder = model.Decoder(emb_size=args.emb_size,
                           hid_size=args.hid_size,
                           vocab_size=len(output_w2i),
                           use_attn=args.use_attn)
-  model = model.E2E(encoder=encoder,
-                    pnn=pnn,
-                    decoder=decoder,
-                    input_w2i=input_w2i,
-                    output_w2i=output_w2i,
-                    args=args).cuda()
+  #model = model.E2E(encoder=encoder,
+  #                  pnn=pnn,
+  #                  decoder=decoder,
+  #                  input_w2i=input_w2i,
+  #                  output_w2i=output_w2i,
+  #                  args=args).cuda()
+  model = model.Model(encoder=encoder,
+                      policy=policy,
+                      decoder=decoder,
+                      input_w2i=input_w2i,
+                      output_w2i=output_w2i,
+                      args=args).cuda()
 elif args.multitask:
-  # Base components
-  encoder = model.Encoder(vocab_size=len(input_w2i), 
-                          emb_size=args.emb_size, 
-                          hid_size=args.hid_size)
-
-  pnn = model.PNN(hidden_size=args.hid_size,
-                  db_size=args.db_size)
-
-  decoder = model.Decoder(emb_size=args.emb_size,
-                          hid_size=args.hid_size,
-                          vocab_size=len(output_w2i),
-                          use_attn=args.use_attn)
-  
   # NLU
-  nlu = model.NLU(encoder=encoder,
+  nlu_encoder = model.Encoder(vocab_size=len(input_w2i), 
+                              emb_size=args.emb_size, 
+                              hid_size=args.hid_size)
+  nlu = model.NLU(encoder=nlu_encoder,
                   input_w2i=input_w2i,
                   args=args).cuda()
-
+  nlu.load('model/nlu_17') 
+  
   # DM
-  dm = model.DM(pnn=pnn,
+  dm_pnn = model.PolicySmall(hidden_size=args.hid_size,
+                             db_size=args.db_size,
+                             bs_size=args.bs_size,
+                             da_size=args.da_size)
+  dm = model.DM(pnn=dm_pnn,
                 args=args).cuda()
+  dm.load('model/dm_4')
 
   # NLG
-  nlg = model.NLG(decoder=decoder,
-                  output_w2i=output_w2i,
-                  args=args).cuda()
+  nlg_decoder = model.Decoder(emb_size=args.emb_size,
+                              hid_size=args.hid_size,
+                              vocab_size=len(output_w2i),
+                              use_attn=args.use_attn)
+  nlg= model.NLG(decoder=nlg_decoder,
+                 output_w2i=output_w2i,
+                 args=args) 
+  nlg.load('model/nlg_19')
 
-  # E2E
-  e2e = model.E2E(encoder=encoder,
-                  pnn=pnn,
-                  decoder=decoder,
-                  input_w2i=input_w2i,
-                  output_w2i=output_w2i,
-                  args=args).cuda()
 
-  # MultiTask
-  multi_task = model.MultiTask(nlu=nlu,
-                               dm=dm,
-                               nlg=nlg,
-                               e2e=e2e,
-                               args=args).cuda()
+  # Full model
+  #encoder = model.Encoder(vocab_size=len(input_w2i), 
+  #                        emb_size=args.emb_size, 
+  #                        hid_size=args.hid_size)
+  #pnn = model.PolicyBig(hidden_size=args.hid_size,
+  #                      db_size=args.db_size,
+  #                      bs_size=args.bs_size,
+  #                      da_size=args.da_size)
+  encoder = model.FusionEncoder(vocab_size=len(input_w2i), 
+                                emb_size=args.emb_size, 
+                                bs_size=2*args.bs_size, 
+                                hid_size=args.hid_size)
+  pnn = model.FusionPolicy(hidden_size=args.hid_size,
+                           db_size=args.db_size,
+                           bs_size=2*args.bs_size,
+                           da_size=args.da_size)
+  decoder = model.Decoder(emb_size=args.emb_size,
+                          hid_size=args.hid_size,
+                          vocab_size=len(output_w2i),
+                          use_attn=args.use_attn)
+  cf_dec = model.ColdFusionLayer(hid_size=args.hid_size,
+                                 vocab_size=len(output_w2i))
+  multi_task = model.MultiTaskFusion2(nlu=nlu,
+                                     dm=dm,
+                                     nlg=nlg,
+                                     encoder=encoder,
+                                     pnn=pnn,
+                                     cf_dec=cf_dec,
+                                     decoder=decoder,
+                                     input_w2i=input_w2i,
+                                     output_w2i=output_w2i,
+                                     args=args).cuda()
+ 
   
 #if args.use_cuda is True:
 #  model = model.cuda()
@@ -341,8 +418,12 @@ for epoch in range(args.num_epochs):
         bs, da, db = model.prep_batch(batch_rows)
         cum_loss += model.train(bs, da, db)
       elif args.nlg_predictor:
-        target_seq, target_lens, db, da = model.prep_batch(batch_rows)
-        cum_loss += model.train(target_seq, target_lens, db, da)
+        target_seq, target_lens, db, da, bs = model.prep_batch(batch_rows)
+        cum_loss += model.train(target_seq, target_lens, db, da, bs)
+      elif args.s2s_predictor:
+        input_seq, input_lens, target_seq, target_lens, db, bs, da = model.prep_batch(batch_rows)
+        # Train batch
+        cum_loss += model.train(input_seq, input_lens, target_seq, target_lens, db, bs, da)
       else:
         input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
         # Train batch
@@ -353,9 +434,10 @@ for epoch in range(args.num_epochs):
       print("Epoch {0}/{1} Batch {2}/{3} Avg Loss {4:.2f}".format(epoch+1, args.num_epochs, batch, num_batches, cum_loss/(batch+1)))
 
   if args.multitask:
-    nlu.save("{0}_{1}".format(args.model_name, epoch))
-    dm.save("{0}_{1}".format(args.model_name, epoch))
-    nlg.save("{0}_{1}".format(args.model_name, epoch))
-    e2e.save("{0}_{1}".format(args.model_name, epoch))
+    #nlu.save("{0}_{1}".format(args.model_name, epoch))
+    #dm.save("{0}_{1}".format(args.model_name, epoch))
+    #nlg.save("{0}_{1}".format(args.model_name, epoch))
+    #e2e.save("{0}_{1}".format(args.model_name, epoch))
+    multi_task.save("{0}_{1}".format(args.model_name, epoch))
   else:
     model.save("{0}_{1}".format(args.model_name, epoch))

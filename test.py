@@ -4,6 +4,7 @@ import math
 import model
 import random
 import subprocess
+import time
 
 from collections import defaultdict, Counter
 #from evaluate_model import evaluateModel
@@ -47,6 +48,7 @@ parser.add_argument('--cold_fusion', type=str2bool, const=True, nargs='?', defau
 parser.add_argument('--bs_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--dm_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--nlg_predictor', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--mtf_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--multitask', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--lm_name', type=str, default='baseline')
 parser.add_argument('--s2s_name', type=str, default='baseline')
@@ -85,6 +87,53 @@ def load_data(filename, dial_acts_data, dial_act_dict):
       rows.append((input_seq, target_seq, db, bs, da, file, i))
 
   return rows
+
+#def load_data(filename, dial_acts_data, dial_act_dict):
+#  data = json.load(open(filename))
+#  rows = []
+#  for file, dial in data.items():
+#    input_so_far = []
+#    for i in range(len(dial['sys'])):
+#      input_so_far += ['_GO'] + dial['usr'][i].strip().split() + ['_EOS']
+#
+#      input_seq = [e for e in input_so_far]
+#      target_seq = ['_GO'] + dial['sys'][i].strip().split() + ['_EOS']
+#      db = dial['db'][i]
+#      bs = dial['bs'][i]
+#
+#      # Get dialog acts
+#      dial_turns = dial_acts_data[file.strip('.json')]
+#      if str(i+1) not in dial_turns.keys():
+#        da = [0.0]*len(dial_act_dict)
+#      else:
+#        turn = dial_turns[str(i+1)]
+#        da = [0.0]*len(dial_act_dict)
+#        if turn != "No Annotation":
+#          for act in turn.keys():
+#            da[dial_act_dict[act]] = 1.0
+#
+#      rows.append((input_seq, target_seq, db, bs, da, file, i))
+#
+#      # Add sys output
+#      input_so_far += target_seq
+#
+#  return rows
+#
+#
+#def get_dial_acts(filename):
+#
+#  data = json.load(open(filename))
+#  dial_acts = []
+#  for dial in data.values():
+#    for turn in dial.values():
+#      if turn == "No Annotation":
+#        continue
+#      for dial_act in turn.keys():
+#        if dial_act not in dial_acts:
+#          dial_acts.append(dial_act)
+#  print(dial_acts, len(dial_acts))
+#  return dict(zip(dial_acts, range(len(dial_acts)))), data
+
 
 
 def get_dial_acts(filename):
@@ -181,7 +230,8 @@ encoder = model.Encoder(vocab_size=len(input_w2i),
 
 policy = model.Policy(hidden_size=args.hid_size,
                       db_size=args.db_size,
-                      bs_size=args.bs_size)
+                      bs_size=args.bs_size,
+                      da_size=args.da_size)
 
 decoder = model.Decoder(emb_size=args.emb_size,
                         hid_size=args.hid_size,
@@ -233,8 +283,10 @@ elif args.bs_predictor:
                     input_w2i=input_w2i,
                     args=args)
 elif args.dm_predictor:
-  pnn = model.PNN(hidden_size=args.hid_size,
-                  db_size=args.db_size)
+  pnn = model.PolicySmall(hidden_size=args.hid_size,
+                          db_size=args.db_size,
+                          bs_size=args.bs_size,
+                          da_size=args.da_size)
   model = model.DM(pnn=pnn,
                    args=args)
 elif args.nlg_predictor:
@@ -250,6 +302,159 @@ elif args.multitask:
   encoder = model.Encoder(vocab_size=len(input_w2i),
                           emb_size=args.emb_size,
                           hid_size=args.hid_size)
+  nlu = model.NLU(encoder=encoder,
+                    input_w2i=input_w2i,
+                    args=args)
+  pnn = model.PolicySmall(hidden_size=args.hid_size,
+                          db_size=args.db_size,
+                          bs_size=args.bs_size,
+                          da_size=args.da_size)
+  dm = model.DM(pnn=pnn,
+                   args=args)
+  decoder = model.Decoder(emb_size=args.emb_size,
+                          hid_size=args.hid_size,
+                          vocab_size=len(output_w2i),
+                          use_attn=args.use_attn)
+  nlg= model.NLG(decoder=decoder,
+                    output_w2i=output_w2i,
+                    args=args)
+
+  # Model
+  #model  = model.E2E(encoder=encoder,
+  #                  pnn=pnn,
+  #                  decoder=decoder,
+  #                  input_w2i=input_w2i,
+  #                  output_w2i=output_w2i,
+  #                  args=args).cuda()
+  model = model.E2EC(nlu=nlu,
+                    dm=dm,
+                    nlg=nlg,
+                    input_w2i=input_w2i,
+                    output_w2i=output_w2i,
+                    args=args).cuda()
+  #model.nlu.load('model/nlu_17')
+  #model.dm.load('model/dm_4')
+  #model.nlg.load('model/nlg_19')
+elif args.mtf_predictor:
+  # NLU
+  nlu_encoder = model.Encoder(vocab_size=len(input_w2i),
+                              emb_size=args.emb_size,
+                              hid_size=args.hid_size)
+  nlu = model.NLU(encoder=nlu_encoder,
+                  input_w2i=input_w2i,
+                  args=args).cuda()
+  nlu.load('model/nlu_17')
+
+  # DM
+  dm_pnn = model.PolicySmall(hidden_size=args.hid_size,
+                             db_size=args.db_size,
+                             bs_size=args.bs_size,
+                             da_size=args.da_size)
+  dm = model.DM(pnn=dm_pnn,
+                args=args).cuda()
+  dm.load('model/dm_4')
+
+  # NLG
+  nlg_decoder = model.Decoder(emb_size=args.emb_size,
+                              hid_size=args.hid_size,
+                              vocab_size=len(output_w2i),
+                              use_attn=args.use_attn)
+  nlg= model.NLG(decoder=nlg_decoder,
+                 output_w2i=output_w2i,
+                 args=args)
+  nlg.load('model/nlg_19')
+
+
+  # Full model
+  encoder = model.FusionEncoder(vocab_size=len(input_w2i),
+                                emb_size=args.emb_size,
+                                bs_size=args.bs_size,
+                                hid_size=args.hid_size)
+  pnn = model.FusionPolicy(hidden_size=args.hid_size,
+                           db_size=args.db_size,
+                           bs_size=args.bs_size,
+                           da_size=args.da_size)
+  decoder = model.Decoder(emb_size=args.emb_size,
+                          hid_size=args.hid_size,
+                          vocab_size=len(output_w2i),
+                          use_attn=args.use_attn)
+  cf_dec = model.ColdFusionLayer(hid_size=args.hid_size,
+                                 vocab_size=len(output_w2i))
+  model = model.MultiTaskFusion2(nlu=nlu,
+                                     dm=dm,
+                                     nlg=nlg,
+                                     encoder=encoder,
+                                     pnn=pnn,
+                                     cf_dec=cf_dec,
+                                     decoder=decoder,
+                                     input_w2i=input_w2i,
+                                     output_w2i=output_w2i,
+                                     args=args).cuda()
+  #encoder = model.Encoder(vocab_size=len(input_w2i),
+  #                        emb_size=args.emb_size,
+  #                        hid_size=args.hid_size)
+  #pnn = model.PolicyBig(hidden_size=args.hid_size,
+  #                      db_size=args.db_size,
+  #                      bs_size=args.bs_size,
+  #                      da_size=args.da_size)
+  #decoder = model.Decoder(emb_size=args.emb_size,
+  #                        hid_size=args.hid_size,
+  #                        vocab_size=len(output_w2i),
+  #                        use_attn=args.use_attn)
+  #cf_dec = model.ColdFusionLayer(hid_size=args.hid_size,
+  #                               vocab_size=len(output_w2i))
+  #model = model.MultiTaskFusion(nlu=nlu,
+  #                              dm=dm,
+  #                              nlg=nlg,
+  #                              encoder=encoder,
+  #                              pnn=pnn,
+  #                              cf_dec=cf_dec,
+  #                              decoder=decoder,
+  #                              input_w2i=input_w2i,
+  #                              output_w2i=output_w2i,
+  #                              args=args).cuda()
+
+  #encoder = model.Encoder(vocab_size=len(input_w2i),
+  #                        emb_size=args.emb_size,
+  #                        hid_size=args.hid_size)
+
+  #pnn = model.PNN(hidden_size=args.hid_size,
+  #                db_size=args.db_size)
+
+  #decoder = model.Decoder(emb_size=args.emb_size,
+  #                        hid_size=args.hid_size,
+  #                        vocab_size=len(output_w2i),
+  #                        use_attn=args.use_attn)
+
+  #nlg_decoder = model.Decoder(emb_size=args.emb_size,
+  #                            hid_size=args.hid_size,
+  #                            vocab_size=len(output_w2i),
+  #                            use_attn=args.use_attn)
+
+  #nlu = model.NLU(encoder=encoder,
+  #                input_w2i=input_w2i,
+  #                args=args).cuda()
+
+  #nlg = model.NLG(decoder=nlg_decoder,
+  #                output_w2i=output_w2i,
+  #                args=args).cuda()
+
+  #cf = model.ColdFusionLayer(hid_size=args.hid_size,
+  #                           vocab_size=len(output_w2i)).cuda()
+
+  #model = model.MultiTaskFusion(nlu=nlu,
+  #                              nlg=nlg,
+  #                              encoder=encoder,
+  #                              pnn=pnn,
+  #                              decoder=decoder,
+  #                              cf=cf,
+  #                              input_w2i=input_w2i,
+  #                              output_w2i=output_w2i,
+  #                              args=args).cuda()
+elif not args.test_lm:
+  encoder = model.Encoder(vocab_size=len(input_w2i),
+                          emb_size=args.emb_size,
+                          hid_size=args.hid_size)
 
   pnn = model.PNN(hidden_size=args.hid_size,
                   db_size=args.db_size)
@@ -258,15 +463,13 @@ elif args.multitask:
                           hid_size=args.hid_size,
                           vocab_size=len(output_w2i),
                           use_attn=args.use_attn)
+  #model  = model.E2E(encoder=encoder,
+  #                  pnn=pnn,
+  #                  decoder=decoder,
+  #                  input_w2i=input_w2i,
+  #                  output_w2i=output_w2i,
+  #                  args=args).cuda()
 
-  # Model
-  model = model.E2E(encoder=encoder,
-                    pnn=pnn,
-                    decoder=decoder,
-                    input_w2i=input_w2i,
-                    output_w2i=output_w2i,
-                    args=args)
-elif not args.test_lm:
   model = model.Model(encoder=encoder,
                       policy=policy,
                       decoder=decoder,
@@ -336,24 +539,25 @@ for epoch in range(20):
       predicted_da = model.predict(bs, db)
       bs_predictions.append((predicted_da.data.cpu().numpy(), da.data.cpu().numpy()))
     elif args.nlg_predictor:
-      target_seq, target_lens, db, da = model.prep_batch(batch_rows)
+      target_seq, target_lens, db, da, bs = model.prep_batch(batch_rows)
       # Get predicted sentences for batch
-      predicted_sentences = model.decode(50, db, da)
+      predicted_sentences = model.decode(50, db, da, bs)
 
       # Add predicted to list
       for i,sent in enumerate(predicted_sentences):
         all_predicted[batch_rows[i][-2]].append(sent) 
     else:
-      input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
+      input_seq, input_lens, target_seq, target_lens, db, bs, da = model.prep_batch(batch_rows)
 
       # Get predicted sentences for batch
-      predicted_sentences = model.decode(input_seq, input_lens, 50, db, bs)
+      predicted_sentences = model.decode(input_seq, input_lens, 50, db, bs, da)
 
       # Add predicted to list
       for i,sent in enumerate(predicted_sentences):
         all_predicted[batch_rows[i][-2]].append(sent) 
 
   json.dump(all_predicted, open('temp.json', 'w+'))
+  time.sleep(2)
 
   if args.bs_predictor:
     bs_preds = np.concatenate([x[0] for x in bs_predictions])
@@ -367,7 +571,14 @@ for epoch in range(20):
     if args.domain:
       out = subprocess.check_output("python2.7 evaluate.py --pred temp.json --target temp_true.json".split())
     else:
-      out = subprocess.check_output("python2.7 evaluate.py --pred temp.json --target data/val_dials.json".split())
+      finished = False
+      while not finished:
+        try:
+          out = subprocess.check_output("python2.7 evaluate.py --pred temp.json --target data/val_dials.json".split())
+          finished = True
+        except:
+          print(":(")
+          continue
     val_score = float(out.decode().split('|')[-1].strip())
 
 
@@ -382,7 +593,6 @@ for epoch in range(20):
     best_val_epoch = epoch
 
 print("Best validation score after epoch {0}".format(best_val_epoch))
-
 # Evaluate best val model on test data
 model.load(model_name+"_"+str(best_val_epoch))
 #lm.load('id_lm_10')
@@ -407,19 +617,19 @@ for batch in range(num_test_batches):
     predicted_da = model.predict(bs, db)
     bs_predictions.append((predicted_da.data.cpu().numpy(), da.data.cpu().numpy()))
   elif args.nlg_predictor:
-    target_seq, target_lens, db, da = model.prep_batch(batch_rows)
+    target_seq, target_lens, db, da, bs = model.prep_batch(batch_rows)
     # Get predicted sentences for batch
-    predicted_sentences = model.decode(50, db, da)
+    predicted_sentences = model.decode(50, db, da, bs)
 
     # Add predicted to list
     for i,sent in enumerate(predicted_sentences):
       all_predicted[batch_rows[i][-2]].append(sent) 
   else:
-    input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
+    input_seq, input_lens, target_seq, target_lens, db, bs, da = model.prep_batch(batch_rows)
 
     # Get predicted sentences for batch
-    predicted_sentences = model.decode(input_seq, input_lens, 50, db, bs)
-    #predicted_sentences = model.beam_decode(input_seq, input_lens, 50, db, bs)
+    predicted_sentences = model.decode(input_seq, input_lens, 50, db, bs, da)
+    #predicted_sentences = model.beam_decode(input_seq, input_lens, 50, db, bs, None)
 
     # Add predicted to list
     for i,sent in enumerate(predicted_sentences):
@@ -437,6 +647,7 @@ elif args.dm_predictor:
   print("Test score:", test_score)
 else:
   json.dump(all_predicted, open('temp.json', 'w+'))
+  time.sleep(2)
   out = subprocess.check_output("python2.7 evaluate.py --pred temp.json --target data/test_dials.json".split())
   print(out.decode().split('|')[0] + '\n')
   print("Test score:", float(out.decode().split('|')[-1].strip()))

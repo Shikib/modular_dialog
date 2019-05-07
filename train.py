@@ -47,6 +47,7 @@ parser.add_argument('--bs_predictor', type=str2bool, const=True, nargs='?', defa
 parser.add_argument('--dm_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--nlg_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--s2s_predictor', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--e2e_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--multitask', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--load_lm', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--lm_name', type=str, default='baseline')
@@ -57,7 +58,7 @@ parser.add_argument('--data_size', type=float, default=-1.0)
 
 args = parser.parse_args()
 
-assert args.dm_predictor or args.bs_predictor or args.s2s_predictor or args.nlg_predictor or args.multitask, "Must turn on one training flag"
+assert args.dm_predictor or args.bs_predictor or args.s2s_predictor or args.nlg_predictor or args.multitask or args.e2e_predictor, "Must turn on one training flag"
 
 #def load_data(filename, dial_acts_data, dial_act_dict):
 #  data = json.load(open(filename))
@@ -170,7 +171,7 @@ def load_domain_data(filename, domains, exclude=False):
 
   data = json.load(open(filename))
   rows = []
-  for dial in data.values():
+  for file, dial in data.items():
     input_so_far = []
 
     for i in range(len(dial['sys'])):
@@ -189,7 +190,24 @@ def load_domain_data(filename, domains, exclude=False):
       db = dial['db'][i]
       bs = dial['bs'][i]
 
-      rows.append((input_seq, target_seq, db, bs))
+      # Get dialog acts
+      dial_turns = dial_acts_data[file.strip('.json')]
+      if str(i+1) not in dial_turns.keys():
+        da = [0.0]*len(dial_act_dict)
+      else:
+        turn = dial_turns[str(i+1)]
+        da = [0.0]*len(dial_act_dict)
+        if turn != "No Annotation":
+          for act_type, slots in turn.items():
+            domain = act_type.split("-")[0]
+            da[dial_act_dict["d:"+domain]] = 1.0
+            da[dial_act_dict["d-a:"+act_type]] = 1.0
+            for slot in slots:
+              dasv = "d-a-s-v:" + act_type + "-" + slot[0] + "-" + slot[1]
+              da[dial_act_dict[dasv]] = 1.0
+
+
+      rows.append((input_seq, target_seq, db, bs, da))
 
       # Add sys output
       input_so_far += target_seq
@@ -296,6 +314,46 @@ elif args.s2s_predictor:
                       input_w2i=input_w2i,
                       output_w2i=output_w2i,
                       args=args).cuda()
+elif args.e2e_predictor:
+  # Base components
+  encoder = model.Encoder(vocab_size=len(input_w2i),
+                          emb_size=args.emb_size,
+                          hid_size=args.hid_size)
+  nlu = model.NLU(encoder=encoder,
+                    input_w2i=input_w2i,
+                    args=args)
+  pnn = model.PolicySmall(hidden_size=args.hid_size,
+                          db_size=args.db_size,
+                          bs_size=args.bs_size,
+                          da_size=args.da_size)
+  dm = model.DM(pnn=pnn,
+                   args=args)
+  decoder = model.Decoder(emb_size=args.emb_size,
+                          hid_size=args.hid_size,
+                          vocab_size=len(output_w2i),
+                          use_attn=args.use_attn)
+  nlg= model.NLG(decoder=decoder,
+                    output_w2i=output_w2i,
+                    args=args)
+
+  # Model
+  #model  = model.E2E(encoder=encoder,
+  #                  pnn=pnn,
+  #                  decoder=decoder,
+  #                  input_w2i=input_w2i,
+  #                  output_w2i=output_w2i,
+  #                  args=args).cuda()
+  model = model.E2EC(nlu=nlu,
+                    dm=dm,
+                    nlg=nlg,
+                    input_w2i=input_w2i,
+                    output_w2i=output_w2i,
+                    args=args).cuda()
+  model.nlu.load('model/nlu_17')
+  model.dm.load('model/dm_4')
+  model.nlg.load('model/nlg_19')
+
+
 elif args.multitask:
   # NLU
   nlu_encoder = model.Encoder(vocab_size=len(input_w2i), 
@@ -304,7 +362,7 @@ elif args.multitask:
   nlu = model.NLU(encoder=nlu_encoder,
                   input_w2i=input_w2i,
                   args=args).cuda()
-  nlu.load('model/nlu_17') 
+  nlu.load('model/nlu_25percdata_18') 
   
   # DM
   dm_pnn = model.PolicySmall(hidden_size=args.hid_size,
@@ -313,7 +371,7 @@ elif args.multitask:
                              da_size=args.da_size)
   dm = model.DM(pnn=dm_pnn,
                 args=args).cuda()
-  dm.load('model/dm_4')
+  dm.load('model/dm_25percdata_7')
 
   # NLG
   nlg_decoder = model.Decoder(emb_size=args.emb_size,
@@ -323,7 +381,7 @@ elif args.multitask:
   nlg= model.NLG(decoder=nlg_decoder,
                  output_w2i=output_w2i,
                  args=args) 
-  nlg.load('model/nlg_19')
+  nlg.load('model/nlg_25percdata_15')
 
 
   # Full model
@@ -336,11 +394,11 @@ elif args.multitask:
   #                      da_size=args.da_size)
   encoder = model.FusionEncoder(vocab_size=len(input_w2i), 
                                 emb_size=args.emb_size, 
-                                bs_size=2*args.bs_size, 
+                                bs_size=args.bs_size, 
                                 hid_size=args.hid_size)
   pnn = model.FusionPolicy(hidden_size=args.hid_size,
                            db_size=args.db_size,
-                           bs_size=2*args.bs_size,
+                           bs_size=args.bs_size,
                            da_size=args.da_size)
   decoder = model.Decoder(emb_size=args.emb_size,
                           hid_size=args.hid_size,
@@ -377,8 +435,8 @@ if args.data_size > -1:
 if args.domain:
   test_domains = [u'restaurant']
   train = load_domain_data('data/train_dials.json', test_domains, exclude=True)
-  valid = load_domain_data('data/val_dials.json', test_domains, exclude=False)
-  test = load_domain_data('data/test_dials.json', test_domains, exclude=False)
+  valid = load_domain_data('data/val_dials.json', test_domains, exclude=True)
+  test = load_domain_data('data/test_dials.json', test_domains, exclude=True)
 
 print("Number of training instances:", len(train))
 print("Number of validation instances:", len(valid))
@@ -427,9 +485,9 @@ for epoch in range(args.num_epochs):
         # Train batch
         cum_loss += model.train(input_seq, input_lens, target_seq, target_lens, db, bs, da)
       else:
-        input_seq, input_lens, target_seq, target_lens, db, bs = model.prep_batch(batch_rows)
+        input_seq, input_lens, target_seq, target_lens, db, bs, da = model.prep_batch(batch_rows)
         # Train batch
-        cum_loss += model.train(input_seq, input_lens, target_seq, target_lens, db, bs)
+        cum_loss += model.train(input_seq, input_lens, target_seq, target_lens, db, bs, da)
 
     # Log batch if needed
     if batch > 0 and batch % 50 == 0:

@@ -50,6 +50,7 @@ parser.add_argument('--bs_predictor', type=str2bool, const=True, nargs='?', defa
 parser.add_argument('--dm_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--nlg_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--mtf_predictor', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--s2s_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--multitask', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--lm_name', type=str, default='baseline')
 parser.add_argument('--s2s_name', type=str, default='baseline')
@@ -189,9 +190,12 @@ def load_domain_data(filename, domains, include=False):
 
   data = json.load(open(filename))
   rows = []
-  for filename,dial in data.items():
+  num_dials = 0
+  num_total_dials = 0
+  for filename, dial in data.items():
     input_so_far = []
-
+    this_dial = False
+    num_total_dials += 1
     for i in range(len(dial['sys'])):
       bs_doms = get_belief_state_domains(dial['bs'][i])
       if include:
@@ -202,17 +206,38 @@ def load_domain_data(filename, domains, include=False):
         # Skip utterances which have one of the domains in 'domains'
         if len(list(set(bs_doms).intersection(domains))) > 0:
           continue
+      if this_dial is False:
+        num_dials += 1
+        this_dial = True
       input_so_far += ['_GO'] + dial['usr'][i].strip().split() + ['_EOS']
       input_seq = [e for e in input_so_far]
       target_seq = ['_GO'] + dial['sys'][i].strip().split() + ['_EOS']
       db = dial['db'][i]
       bs = dial['bs'][i]
 
-      rows.append((input_seq, target_seq, db, bs, filename, i))
+      # Get dialog acts
+      dial_turns = dial_acts_data[filename.strip('.json')]
+      if str(i+1) not in dial_turns.keys():
+        da = [0.0]*len(dial_act_dict)
+      else:
+        turn = dial_turns[str(i+1)]
+        da = [0.0]*len(dial_act_dict)
+        if turn != "No Annotation":
+          for act_type, slots in turn.items():
+            domain = act_type.split("-")[0]
+            da[dial_act_dict["d:"+domain]] = 1.0
+            da[dial_act_dict["d-a:"+act_type]] = 1.0
+            for slot in slots:
+              dasv = "d-a-s-v:" + act_type + "-" + slot[0] + "-" + slot[1]
+              da[dial_act_dict[dasv]] = 1.0
+
+
+      rows.append((input_seq, target_seq, db, bs, da, filename, i))
 
       # Add sys output
       input_so_far += target_seq
 
+  print("Number of dialogues with restaurant in domains:", num_dials, "/", num_total_dials)
   return rows  
 
 # Load vocabulary
@@ -299,6 +324,15 @@ elif args.nlg_predictor:
   model = model.NLG(decoder=decoder,
                     output_w2i=output_w2i,
                     args=args)
+elif args.s2s_predictor:
+  model = model.Model(encoder=encoder,
+                      policy=policy,
+                      decoder=decoder,
+                      input_w2i=input_w2i,
+                      output_w2i=output_w2i,
+                      args=args).cuda()
+
+ 
 elif args.multitask:
   # Base components
   encoder = model.Encoder(vocab_size=len(input_w2i),
@@ -334,9 +368,10 @@ elif args.multitask:
                     input_w2i=input_w2i,
                     output_w2i=output_w2i,
                     args=args).cuda()
-  #model.nlu.load('model/nlu_17')
-  #model.dm.load('model/dm_4')
-  #model.nlg.load('model/nlg_19')
+  model.nlu.load('model/nlu_17')
+  model.dm.load('model/dm_4')
+  model.nlg.load('model/nlg_19')
+
 elif args.mtf_predictor:
   # NLU
   nlu_encoder = model.Encoder(vocab_size=len(input_w2i),
@@ -495,8 +530,8 @@ test = load_data('data/test_dials.json', dial_acts_data, dial_act_dict)
 if args.domain:
   test_domains = [u'restaurant']
   train = load_domain_data('data/train_dials.json', test_domains, include=False)
-  valid = load_domain_data('data/val_dials.json', test_domains, include=True)
-  test = load_domain_data('data/test_dials.json', test_domains, include=True)
+  valid = load_domain_data('data/val_dials.json', test_domains, include=False)
+  test = load_domain_data('data/test_dials.json', test_domains, include=False)
 
 num_val_batches = math.ceil(len(valid)/args.batch_size)
 

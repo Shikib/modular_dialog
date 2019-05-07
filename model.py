@@ -2199,11 +2199,13 @@ class E2EC(nn.Module):
     if self.args.use_cuda is True:
       db = torch.cuda.FloatTensor([[int(e) for e in row[2]] for row in rows])
       bs = torch.cuda.FloatTensor([[int(e) for e in row[3]] for row in rows])
+      da = torch.cuda.FloatTensor([[int(e) for e in row[4]] for row in rows])
     else:
       db = torch.FloatTensor([[int(e) for e in row[2]] for row in rows])
       bs = torch.FloatTensor([[int(e) for e in row[3]] for row in rows])
+      da = torch.cuda.FloatTensor([[int(e) for e in row[4]] for row in rows])
 
-    return input_seq, input_lens, target_seq, target_lens, db, bs, None
+    return input_seq, input_lens, target_seq, target_lens, db, bs, da
 
   def forward(self, input_seq, input_lens, target_seq, target_lens, db, bs, da):
     # NLU
@@ -2213,15 +2215,15 @@ class E2EC(nn.Module):
     da = F.sigmoid(self.dm(bs, db))
 
     # NLG
-    probas = self.nlg(target_seq, target_lens, db, da)
+    probas = self.nlg(target_seq, target_lens, db, da, bs)
 
     return probas
 
-  def train(self, input_seq, input_lens, target_seq, target_lens, db, bs, no_prop=False):
+  def train(self, input_seq, input_lens, target_seq, target_lens, db, bs, da, no_prop=False):
     self.optim.zero_grad()
 
     # Forward
-    proba = self.forward(input_seq, input_lens, target_seq, target_lens, db, bs)
+    proba = self.forward(input_seq, input_lens, target_seq, target_lens, db, bs, da)
 
     # Loss
     loss = self.criterion(proba.view(-1, proba.size(-1)), target_seq.flatten())
@@ -2659,7 +2661,7 @@ class MultiTaskFusion2(nn.Module):
     with torch.no_grad():
       # NLU output
       pred_bs = F.sigmoid(self.nlu(input_seq, input_lens)).unsqueeze(0).detach()
-      #pred_bs2 = torch.cat((pred_bs,bs.unsqueeze(0)), dim=-1)
+      # pred_bs2 = torch.cat((pred_bs,bs.unsqueeze(0)), dim=-1)
       pred_bs = bs.unsqueeze(0)
 
       # Encoder

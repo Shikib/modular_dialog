@@ -458,7 +458,7 @@ for epoch in range(args.num_epochs):
     batch_indices = indices[batch*args.batch_size:(batch+1)*args.batch_size]
     batch_rows = [train[i] for i in batch_indices]
 
-    if args.multitask:
+    if args.multitask_model:
       ## Train NLU
       #input_seq, input_lens, bs = nlu.prep_batch(batch_rows)
       #cum_loss += nlu.train(input_seq, input_lens, bs)
@@ -474,7 +474,7 @@ for epoch in range(args.num_epochs):
       ## Train E2E
       #input_seq, input_lens, target_seq, target_lens, db, bs = e2e.prep_batch(batch_rows)
       #cum_loss += e2e.train(input_seq, input_lens, target_seq, target_lens, db, bs)
-      cum_loss += multi_task.train(batch_rows)
+      cum_loss += model.train(batch_rows)
     else:
       if args.bs_predictor:
         input_seq, input_lens, bs = model.prep_batch(batch_rows)
@@ -498,11 +498,4 @@ for epoch in range(args.num_epochs):
     if batch > 0 and batch % 50 == 0:
       print("Epoch {0}/{1} Batch {2}/{3} Avg Loss {4:.2f}".format(epoch+1, args.num_epochs, batch, num_batches, cum_loss/(batch+1)))
 
-  if args.multitask:
-    #nlu.save("{0}_{1}".format(args.model_name, epoch))
-    #dm.save("{0}_{1}".format(args.model_name, epoch))
-    #nlg.save("{0}_{1}".format(args.model_name, epoch))
-    #e2e.save("{0}_{1}".format(args.model_name, epoch))
-    multi_task.save("{0}_{1}".format(args.model_name, epoch))
-  else:
-    model.save("{0}_{1}".format(args.model_name, epoch))
+  model.save("{0}_{1}".format(args.model_name, epoch))

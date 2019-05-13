@@ -230,7 +230,7 @@ class Policy(nn.Module):
     self.proj_da = nn.Linear(da_size, hidden_size)
 
   def forward(self, hidden, db, bs, da):
-    output = self.proj_hid(hidden[0]) + self.proj_db(db) #+ self.proj_bs(bs) + self.proj_da(da)
+    output = self.proj_hid(hidden[0]) + self.proj_db(db) + self.proj_bs(bs) :+ self.proj_da(da)
     return (F.tanh(output), hidden[1])
 
 class PNN(nn.Module):
@@ -1686,7 +1686,6 @@ class NLU(nn.Module):
     self.optim = optim.Adam(lr=args.lr, params=self.parameters(), weight_decay=args.l2_norm)
     self.args = args
 
-
   def prep_batch(self, rows):
     def _pad(arr, pad=3):
       # Given an array of integer arrays, pad all arrays to the same length
@@ -1704,13 +1703,11 @@ class NLU(nn.Module):
 
     return input_seq, input_lens, bs
 
-
   def forward(self, input_seq, input_lens):
     encoder_outputs, encoder_hidden = self.encoder(input_seq, input_lens)
     bs_out_logits = self.linear(encoder_hidden[0])
 
     return bs_out_logits.squeeze(0)
-
 
   def train(self, input_seq, input_lens, bs, no_prop=False):
     self.optim.zero_grad()
@@ -2358,8 +2355,7 @@ class MultiTask(nn.Module):
     e2e_loss = self.e2e.train(input_seq, input_lens, target_seq, target_lens, db, bs, no_prop=True)
 
     # Combine loss and backprop
-    #comb_loss = nlu_loss + dm_loss + nlg_loss + e2e_loss
-    comb_loss = dm_loss + e2e_loss
+    comb_loss = nlu_loss + dm_loss + nlg_loss + e2e_loss
 
     comb_loss.backward()
     torch.nn.utils.clip_grad_norm_(self.parameters(), self.args.clip)
@@ -2706,4 +2702,175 @@ class StructuredFusion(nn.Module):
   def load(self, name):
     self.load_state_dict(torch.load(name+'.mtfusion').state_dict())
 
+############################################################### LEGACY ################################################################
 
+class MultiTaskFusion2(nn.Module):
+  def __init__(self, nlu, dm, nlg, encoder, pnn, decoder, cf_dec, input_w2i, output_w2i, args):
+    super(MultiTaskFusion2, self).__init__()
+
+    # Model
+    self.nlu = nlu
+    self.dm = dm
+    self.nlg = nlg
+
+    self.encoder = encoder
+    self.pnn = pnn
+    self.decoder = decoder
+
+    self.f_dec = cf_dec
+
+    self.input_i2w = sorted(input_w2i, key=input_w2i.get)
+    self.input_w2i = input_w2i
+    self.output_i2w = sorted(output_w2i, key=output_w2i.get)
+    self.output_w2i = output_w2i
+
+    self.optim = optim.Adam(lr=args.lr, params=self.parameters(), weight_decay=args.l2_norm)
+    self.criterion = nn.NLLLoss(ignore_index=3, size_average=True)
+    self.bs_criterion = nn.BCELoss(reduce=True)
+    self.da_criterion = nn.BCELoss(reduce=True)
+    self.args = args
+
+  def train(self, batch_rows):
+    self.optim.zero_grad()
+
+    # Get values
+    input_seq, input_lens, bs = self.nlu.prep_batch(batch_rows)
+    target_seq, target_lens, db, da, bs = self.nlg.prep_batch(batch_rows)
+
+    # Train E2E
+    proba, pred_bs, pred_da = self.forward(input_seq, input_lens, target_seq, target_lens, db, bs, None)
+    loss = self.criterion(proba.view(-1, proba.size(-1)), target_seq.flatten())
+    if self.args.multitasking:
+        loss += self.bs_criterion(pred_bs, bs)
+        loss += self.da_criterion(pred_da, da)
+
+    # Backprop
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(self.parameters(), self.args.clip)
+    self.optim.step()
+
+    return loss.item()
+
+  def forward(self, input_seq, input_lens, target_seq, target_lens, db, bs, da):
+    # NLU output
+    pred_bs = F.sigmoid(self.nlu(input_seq, input_lens)).unsqueeze(0)
+    if self.args.tune_params is False:
+        pred_bs = pred_bs.detach()
+    #pred_bs2 = torch.cat((pred_bs,bs.unsqueeze(0)), dim=-1)
+
+    bs_inp = bs.unsqueeze(0)
+    # bs_inp = pred_bs
+
+    # Encoder
+    encoder_outputs, encoder_hidden = self.encoder(input_seq, input_lens, bs_inp)
+
+    # DM output
+    pred_da = F.sigmoid(self.dm(bs_inp, db))
+    if self.args.tune_params is False:
+        pred_da = pred_da.detach()
+
+    # PNN
+    pnn_out = self.pnn(encoder_hidden[0], db, bs_inp, pred_da)
+    decoder_hidden = (pnn_out, encoder_hidden[1])
+
+    # Decoder
+    probas = torch.zeros(target_seq.size(0), target_seq.size(1), len(self.output_i2w)).cuda()
+    last_word = target_seq[0].unsqueeze(0)
+
+    # NLG 
+    da_proj = self.nlg.da_in(pred_da)
+    db_proj = self.nlg.db_in(db)
+    bs_proj = self.nlg.bs_in(bs_inp)
+    da_projc = self.nlg.da_inc(pred_da)
+    db_projc = self.nlg.db_inc(db)
+    bs_projc = self.nlg.bs_inc(bs_inp)
+    nlg_decoder_hidden = (F.relu(da_proj+db_proj+bs_proj), F.relu(da_projc+db_projc+bs_projc))
+
+    for t in range(1,target_seq.size(0)):
+      decoder_output, decoder_hidden, dec_out = self.decoder(decoder_hidden, last_word, None, None, ret_out=True)
+      nlg_decoder_output, nlg_decoder_hidden = self.nlg.decoder(nlg_decoder_hidden, last_word, None, None)
+
+      if self.args.tune_params is False:
+        self.nlg_decoder_output = self.nlg_decoder_output.detach()
+      # Save output
+      probas[t] = self.f_dec(dec_out, nlg_decoder_output)
+
+      # Set new last word
+      last_word = target_seq[t].unsqueeze(0)
+
+    return probas, pred_bs, pred_da
+
+  def prep_batch(self, batch_rows):
+    input_seq, input_lens, bs = self.nlu.prep_batch(batch_rows)
+    target_seq, target_lens, db, da, bs = self.nlg.prep_batch(batch_rows)
+    return input_seq, input_lens, target_seq, target_lens, db, bs, da
+
+  def decode(self, input_seq, input_lens, max_len, db, bs, da):
+    batch_size = len(input_seq)
+    predictions = torch.zeros((batch_size, max_len))
+
+    # Should not be used.
+    da = None
+
+    with torch.no_grad():
+      # NLU output
+      pred_bs = F.sigmoid(self.nlu(input_seq, input_lens)).unsqueeze(0).detach()
+      # pred_bs2 = torch.cat((pred_bs,bs.unsqueeze(0)), dim=-1)
+      pred_bs = bs.unsqueeze(0)
+
+      # Encoder
+      encoder_outputs, encoder_hidden = self.encoder(input_seq, input_lens, pred_bs)
+
+      # DM output
+      pred_da = F.sigmoid(self.dm(pred_bs, db)).detach()
+
+      # PNN
+      pnn_out = self.pnn(encoder_hidden[0], db, pred_bs, pred_da)
+      decoder_hidden = (pnn_out, encoder_hidden[1])
+
+      # Decoder
+      last_word = torch.cuda.LongTensor([[self.output_w2i['_GO'] for _ in range(len(input_seq))]])
+
+      # NLG
+      da_proj = self.nlg.da_in(pred_da)
+      db_proj = self.nlg.db_in(db)
+      bs_proj = self.nlg.bs_in(pred_bs)
+      da_projc = self.nlg.da_inc(pred_da)
+      db_projc = self.nlg.db_inc(db)
+      bs_projc = self.nlg.bs_inc(pred_bs)
+      nlg_decoder_hidden = (F.relu(da_proj+db_proj+bs_proj), F.relu(da_projc+db_projc+bs_projc))
+
+      for t in range(max_len):
+        nlg_decoder_output, nlg_decoder_hidden = self.nlg.decoder(nlg_decoder_hidden, last_word, None, None)
+
+        # Pass through decoder
+        decoder_output, decoder_hidden, dec_out = self.decoder(decoder_hidden, last_word, None, None, ret_out=True)
+
+        decoder_output = self.f_dec(dec_out, nlg_decoder_output)
+
+        # Get top candidates
+        topv, topi = decoder_output.data.topk(1)
+        topi = topi.view(-1)
+
+        predictions[:, t] = topi
+
+        # Set new last word
+        last_word = topi.detach().view(1, -1)
+
+    predicted_sentences = []
+    for sentence in predictions:
+      sent = []
+      for ind in sentence:
+        word = self.output_i2w[ind.long().item()]
+        if word == '_EOS':
+          break
+        sent.append(word)
+      predicted_sentences.append(' '.join(sent))
+
+    return predicted_sentences
+  
+  def save(self, name):
+    torch.save(self, name+'.mtfusion')
+
+  def load(self, name):
+    self.load_state_dict(torch.load(name+'.mtfusion').state_dict())

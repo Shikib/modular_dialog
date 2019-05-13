@@ -47,63 +47,28 @@ parser.add_argument('--bs_predictor', type=str2bool, const=True, nargs='?', defa
 parser.add_argument('--dm_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--nlg_predictor', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--s2s_predictor', type=str2bool, const=True, nargs='?', default=False)
-parser.add_argument('--e2e_predictor', type=str2bool, const=True, nargs='?', default=False)
-parser.add_argument('--multitask', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--naive_fusion', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--multitask_model', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--structured_fusion', type=str2bool, const=True, nargs='?', default=False)
+
+
 parser.add_argument('--load_lm', type=str2bool, const=True, nargs='?', default=False)
 parser.add_argument('--lm_name', type=str, default='baseline')
 parser.add_argument('--s2s_name', type=str, default='baseline')
+
+parser.add_argument('--load_nlu', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--load_dm', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--load_nlg', type=str2bool, const=True, nargs='?', default=False)
+parser.add_argument('--tune_params', type=str2bool, const=True, nargs='?', default=True)
+parser.add_argument('--multitasking', type=str2bool, const=True, nargs='?', default=False)
 
 
 parser.add_argument('--data_size', type=float, default=-1.0)
 
 args = parser.parse_args()
 
-assert args.dm_predictor or args.bs_predictor or args.s2s_predictor or args.nlg_predictor or args.multitask or args.e2e_predictor, "Must turn on one training flag"
+assert args.dm_predictor or args.bs_predictor or args.s2s_predictor or args.nlg_predictor or args.multitask_model or args.naive_fusion or args.structured_fusion, "Must turn on one training flag"
 
-#def load_data(filename, dial_acts_data, dial_act_dict):
-#  data = json.load(open(filename))
-#  rows = []
-#  for file, dial in data.items():
-#    input_so_far = []
-#    for i in range(len(dial['sys'])):
-#      input_so_far += ['_GO'] + dial['usr'][i].strip().split() + ['_EOS']
-#
-#      input_seq = [e for e in input_so_far]
-#      target_seq = ['_GO'] + dial['sys'][i].strip().split() + ['_EOS']
-#      db = dial['db'][i]
-#      bs = dial['bs'][i]
-#
-#      # Get dialog acts
-#      dial_turns = dial_acts_data[file.strip('.json')]
-#      if str(i+1) not in dial_turns.keys():
-#        da = [0.0]*len(dial_act_dict)
-#      else:
-#        turn = dial_turns[str(i+1)]
-#        da = [0.0]*len(dial_act_dict)
-#        if turn != "No Annotation":
-#          for act in turn.keys():
-#            da[dial_act_dict[act]] = 1.0
-#
-#      rows.append((input_seq, target_seq, db, bs, da))
-#
-#      # Add sys output
-#      input_so_far += target_seq
-#
-#  return rows
-#
-#def get_dial_acts(filename):
-#
-#  data = json.load(open(filename))
-#  dial_acts = []
-#  for dial in data.values():
-#    for turn in dial.values():
-#      if turn == "No Annotation":
-#        continue
-#      for dial_act in turn.keys():
-#        if dial_act not in dial_acts:
-#          dial_acts.append(dial_act)
-#  print(dial_acts, len(dial_acts))
-#  return dict(zip(dial_acts, range(len(dial_acts)))), data
 
 def load_data(filename, dial_acts_data, dial_act_dict):
   data = json.load(open(filename))
@@ -314,7 +279,8 @@ elif args.s2s_predictor:
                       input_w2i=input_w2i,
                       output_w2i=output_w2i,
                       args=args).cuda()
-elif args.e2e_predictor:
+
+elif args.naive_fusion:
   # Base components
   encoder = model.Encoder(vocab_size=len(input_w2i),
                           emb_size=args.emb_size,
@@ -322,39 +288,82 @@ elif args.e2e_predictor:
   nlu = model.NLU(encoder=encoder,
                     input_w2i=input_w2i,
                     args=args)
+  if args.load_nlu: 
+    nlu.load('model/nlu_17')
+
   pnn = model.PolicySmall(hidden_size=args.hid_size,
                           db_size=args.db_size,
                           bs_size=args.bs_size,
                           da_size=args.da_size)
   dm = model.DM(pnn=pnn,
-                   args=args)
+                args=args)
+  if args.load_dm:
+    dm.load('model/dm_4')
+
   decoder = model.Decoder(emb_size=args.emb_size,
                           hid_size=args.hid_size,
                           vocab_size=len(output_w2i),
                           use_attn=args.use_attn)
-  nlg= model.NLG(decoder=decoder,
+  nlg = model.NLG(decoder=decoder,
                     output_w2i=output_w2i,
                     args=args)
+  if args.load_nlg:
+    nlg.load('model/nlg_19')
 
-  # Model
-  #model  = model.E2E(encoder=encoder,
-  #                  pnn=pnn,
-  #                  decoder=decoder,
-  #                  input_w2i=input_w2i,
-  #                  output_w2i=output_w2i,
-  #                  args=args).cuda()
-  model = model.E2EC(nlu=nlu,
-                    dm=dm,
-                    nlg=nlg,
+  model = model.NaiveFusion(nlu=nlu,
+                            dm=dm,
+                            nlg=nlg,
+                            input_w2i=input_w2i,
+                            output_w2i=output_w2i,
+                            args=args).cuda()
+
+
+elif args.multitask_model:
+
+  # Base components
+  encoder = model.Encoder(vocab_size=len(input_w2i),
+                          emb_size=args.emb_size,
+                          hid_size=args.hid_size)
+  nlu = model.NLU(encoder=encoder,
+                    input_w2i=input_w2i,
+                    args=args)
+  if args.load_nlu: 
+    nlu.load('model/nlu_17')
+
+  pnn = model.PolicySmall(hidden_size=args.hid_size,
+                          db_size=args.db_size,
+                          bs_size=args.bs_size,
+                          da_size=args.da_size)
+  dm = model.DM(pnn=pnn,
+                args=args)
+  if args.load_dm:
+    dm.load('model/dm_4')
+
+
+  decoder = model.Decoder(emb_size=args.emb_size,
+                          hid_size=args.hid_size,
+                          vocab_size=len(output_w2i),
+                          use_attn=args.use_attn)
+  nlg = model.NLG(decoder=decoder,
+                    output_w2i=output_w2i,
+                    args=args)
+  if args.load_nlg:
+    nlg.load('model/nlg_19')
+
+  e2e = model.E2E(encoder=encoder,
+                    pnn=pnn,
+                    decoder=decoder,
                     input_w2i=input_w2i,
                     output_w2i=output_w2i,
                     args=args).cuda()
-  model.nlu.load('model/nlu_17')
-  model.dm.load('model/dm_4')
-  model.nlg.load('model/nlg_19')
 
+  model = model.MultiTask(nlu=nlu,
+                          dm=dm,
+                          nlg=nlg,
+                          e2e=e2e,
+                          args=args).cuda()
 
-elif args.multitask:
+elif args.structured_fusion:
   # NLU
   nlu_encoder = model.Encoder(vocab_size=len(input_w2i), 
                               emb_size=args.emb_size, 
@@ -362,7 +371,8 @@ elif args.multitask:
   nlu = model.NLU(encoder=nlu_encoder,
                   input_w2i=input_w2i,
                   args=args).cuda()
-  nlu.load('model/nlu_25percdata_18') 
+  if args.load_nlu:
+    nlu.load('model/nlu_17') 
   
   # DM
   dm_pnn = model.PolicySmall(hidden_size=args.hid_size,
@@ -371,7 +381,8 @@ elif args.multitask:
                              da_size=args.da_size)
   dm = model.DM(pnn=dm_pnn,
                 args=args).cuda()
-  dm.load('model/dm_25percdata_7')
+  if args.load_dm:
+    dm.load('model/dm_4')
 
   # NLG
   nlg_decoder = model.Decoder(emb_size=args.emb_size,
@@ -381,17 +392,11 @@ elif args.multitask:
   nlg= model.NLG(decoder=nlg_decoder,
                  output_w2i=output_w2i,
                  args=args) 
-  nlg.load('model/nlg_25percdata_15')
+  if args.load_nlg:
+    nlg.load('model/nlg_19')
 
 
   # Full model
-  #encoder = model.Encoder(vocab_size=len(input_w2i), 
-  #                        emb_size=args.emb_size, 
-  #                        hid_size=args.hid_size)
-  #pnn = model.PolicyBig(hidden_size=args.hid_size,
-  #                      db_size=args.db_size,
-  #                      bs_size=args.bs_size,
-  #                      da_size=args.da_size)
   encoder = model.FusionEncoder(vocab_size=len(input_w2i), 
                                 emb_size=args.emb_size, 
                                 bs_size=args.bs_size, 
@@ -406,17 +411,17 @@ elif args.multitask:
                           use_attn=args.use_attn)
   cf_dec = model.ColdFusionLayer(hid_size=args.hid_size,
                                  vocab_size=len(output_w2i))
-  multi_task = model.MultiTaskFusion2(nlu=nlu,
-                                     dm=dm,
-                                     nlg=nlg,
-                                     encoder=encoder,
-                                     pnn=pnn,
-                                     cf_dec=cf_dec,
-                                     decoder=decoder,
-                                     input_w2i=input_w2i,
-                                     output_w2i=output_w2i,
-                                     args=args).cuda()
- 
+  model = model.StructuredFusion(nlu=nlu,
+                                dm=dm,
+                                nlg=nlg,
+                                encoder=encoder,
+                                pnn=pnn,
+                                cf_dec=cf_dec,
+                                decoder=decoder,
+                                input_w2i=input_w2i,
+                                output_w2i=output_w2i,
+                                args=args).cuda()
+
   
 #if args.use_cuda is True:
 #  model = model.cuda()

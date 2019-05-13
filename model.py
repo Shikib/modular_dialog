@@ -2159,9 +2159,9 @@ class E2E(nn.Module):
   def load(self, name):
     self.load_state_dict(torch.load(name+'.e2e').state_dict())
 
-class E2EC(nn.Module):
+class NaiveFusion(nn.Module):
   def __init__(self, nlu, dm, nlg, input_w2i, output_w2i, args):
-    super(E2EC, self).__init__()
+    super(NaiveFusion, self).__init__()
 
     # Model
     self.nlu = nlu
@@ -2340,54 +2340,26 @@ class MultiTask(nn.Module):
 
   def train(self, batch_rows):
     self.optim.zero_grad()
-    auxillary = False
-    if auxillary:
-      # Train NLU
-      input_seq, input_lens, bs = self.nlu.prep_batch(batch_rows)
 
-      # Train DM
-      bs, da, db = self.dm.prep_batch(batch_rows)
+    # Train NLU
+    input_seq, input_lens, bs = self.nlu.prep_batch(batch_rows)
+    nlu_loss = self.nlu.train(input_seq, input_lens, bs, no_prop=True)
 
-      # Train NLG
-      target_seq, target_lens, db, da, bs = self.nlg.prep_batch(batch_rows)
+    # Train DM
+    bs, da, db = self.dm.prep_batch(batch_rows)
+    dm_loss = self.dm.train(bs, da, db, no_prop=True)
 
-      # Get Results
-      input_seq, input_lens, target_seq, target_lens, db, bs = self.e2e.prep_batch(batch_rows)
-      proba, bs_pred, da_pred = self.e2e(input_seq, input_lens, target_seq, target_lens, db, bs, auxillary=True)
+    # Train NLG
+    target_seq, target_lens, db, da, bs = self.nlg.prep_batch(batch_rows)
+    nlg_loss = self.nlg.train(target_seq, target_lens, db, da, bs, no_prop=True)
 
-      # NLU
-      nlu_out = self.nlu.linear(bs_pred)
-      nlu_loss = self.nlu.criterion(nlu_out.squeeze(0), bs)
+    # Train E2E
+    input_seq, input_lens, target_seq, target_lens, db, bs = self.e2e.prep_batch(batch_rows)
+    e2e_loss = self.e2e.train(input_seq, input_lens, target_seq, target_lens, db, bs, no_prop=True)
 
-      # DM
-      da_out = self.dm.da_out(da_pred)
-      dm_loss = self.dm.criterion(da_out.squeeze(0), da)
-
-      # NLG
-      nlg_loss = self.e2e.criterion(proba.view(-1, proba.size(-1)), target_seq.flatten())
-
-      # Combine loss and backprop
-      comb_loss = nlu_loss + dm_loss + nlg_loss 
-    else:
-      # Train NLU
-      input_seq, input_lens, bs = self.nlu.prep_batch(batch_rows)
-      nlu_loss = self.nlu.train(input_seq, input_lens, bs, no_prop=True)
-
-      # Train DM
-      bs, da, db = self.dm.prep_batch(batch_rows)
-      dm_loss = self.dm.train(bs, da, db, no_prop=True)
-
-      # Train NLG
-      target_seq, target_lens, db, da, bs = self.nlg.prep_batch(batch_rows)
-      nlg_loss = self.nlg.train(target_seq, target_lens, db, da, bs, no_prop=True)
-
-      # Train E2E
-      input_seq, input_lens, target_seq, target_lens, db, bs = self.e2e.prep_batch(batch_rows)
-      e2e_loss = self.e2e.train(input_seq, input_lens, target_seq, target_lens, db, bs, no_prop=True)
-
-      # Combine loss and backprop
-      #comb_loss = nlu_loss + dm_loss + nlg_loss + e2e_loss
-      comb_loss = dm_loss + e2e_loss
+    # Combine loss and backprop
+    #comb_loss = nlu_loss + dm_loss + nlg_loss + e2e_loss
+    comb_loss = dm_loss + e2e_loss
 
     comb_loss.backward()
     torch.nn.utils.clip_grad_norm_(self.parameters(), self.args.clip)
@@ -2563,9 +2535,9 @@ class MultiTaskFusion(nn.Module):
   def load(self, name):
     self.load_state_dict(torch.load(name+'.mtfusion').state_dict())
 
-class MultiTaskFusion2(nn.Module):
+class StructuredFusion(nn.Module):
   def __init__(self, nlu, dm, nlg, encoder, pnn, decoder, cf_dec, input_w2i, output_w2i, args):
-    super(MultiTaskFusion2, self).__init__()
+    super(StructuredFusion, self).__init__()
 
     # Model
     self.nlu = nlu
@@ -2585,6 +2557,8 @@ class MultiTaskFusion2(nn.Module):
 
     self.optim = optim.Adam(lr=args.lr, params=self.parameters(), weight_decay=args.l2_norm)
     self.criterion = nn.NLLLoss(ignore_index=3, size_average=True)
+    self.bs_criterion = nn.BCELoss(reduce=True)
+    self.da_criterion = nn.BCELoss(reduce=True)
     self.args = args
 
   def train(self, batch_rows):
@@ -2595,9 +2569,12 @@ class MultiTaskFusion2(nn.Module):
     target_seq, target_lens, db, da, bs = self.nlg.prep_batch(batch_rows)
 
     # Train E2E
-    proba = self.forward(input_seq, input_lens, target_seq, target_lens, db, bs, None)
+    proba, pred_bs, pred_da = self.forward(input_seq, input_lens, target_seq, target_lens, db, bs, None)
     loss = self.criterion(proba.view(-1, proba.size(-1)), target_seq.flatten())
-    
+    if self.args.multitasking:
+        loss += self.bs_criterion(pred_bs, bs)
+        loss += self.da_criterion(pred_da, da)
+
     # Backprop
     loss.backward()
     torch.nn.utils.clip_grad_norm_(self.parameters(), self.args.clip)
@@ -2608,17 +2585,23 @@ class MultiTaskFusion2(nn.Module):
   def forward(self, input_seq, input_lens, target_seq, target_lens, db, bs, da):
     # NLU output
     pred_bs = F.sigmoid(self.nlu(input_seq, input_lens)).unsqueeze(0)
+    if self.args.tune_params is False:
+        pred_bs = pred_bs.detach()
     #pred_bs2 = torch.cat((pred_bs,bs.unsqueeze(0)), dim=-1)
-    pred_bs = bs.unsqueeze(0)
+
+    bs_inp = bs.unsqueeze(0)
+    # bs_inp = pred_bs
 
     # Encoder
-    encoder_outputs, encoder_hidden = self.encoder(input_seq, input_lens, pred_bs)
+    encoder_outputs, encoder_hidden = self.encoder(input_seq, input_lens, bs_inp)
 
     # DM output
-    pred_da = F.sigmoid(self.dm(pred_bs, db))
+    pred_da = F.sigmoid(self.dm(bs_inp, db))
+    if self.args.tune_params is False:
+        pred_da = pred_da.detach()
 
     # PNN
-    pnn_out = self.pnn(encoder_hidden[0], db, pred_bs, pred_da)
+    pnn_out = self.pnn(encoder_hidden[0], db, bs_inp, pred_da)
     decoder_hidden = (pnn_out, encoder_hidden[1])
 
     # Decoder
@@ -2628,23 +2611,25 @@ class MultiTaskFusion2(nn.Module):
     # NLG 
     da_proj = self.nlg.da_in(pred_da)
     db_proj = self.nlg.db_in(db)
-    bs_proj = self.nlg.bs_in(pred_bs)
+    bs_proj = self.nlg.bs_in(bs_inp)
     da_projc = self.nlg.da_inc(pred_da)
     db_projc = self.nlg.db_inc(db)
-    bs_projc = self.nlg.bs_inc(pred_bs)
+    bs_projc = self.nlg.bs_inc(bs_inp)
     nlg_decoder_hidden = (F.relu(da_proj+db_proj+bs_proj), F.relu(da_projc+db_projc+bs_projc))
 
     for t in range(1,target_seq.size(0)):
       decoder_output, decoder_hidden, dec_out = self.decoder(decoder_hidden, last_word, None, None, ret_out=True)
       nlg_decoder_output, nlg_decoder_hidden = self.nlg.decoder(nlg_decoder_hidden, last_word, None, None)
 
+      if self.args.tune_params is False:
+        self.nlg_decoder_output = self.nlg_decoder_output.detach()
       # Save output
       probas[t] = self.f_dec(dec_out, nlg_decoder_output)
 
       # Set new last word
       last_word = target_seq[t].unsqueeze(0)
 
-    return probas
+    return probas, pred_bs, pred_da
 
   def prep_batch(self, batch_rows):
     input_seq, input_lens, bs = self.nlu.prep_batch(batch_rows)

@@ -380,11 +380,11 @@ elif args.multitask_model:
                     input_w2i=input_w2i,
                     args=args)
 
-  pnn = model.PolicySmall(hidden_size=args.hid_size,
+  pnn = model.PolicyBig(hidden_size=args.hid_size,
                           db_size=args.db_size,
                           bs_size=args.bs_size,
                           da_size=args.da_size)
-  dm = model.DM(pnn=pnn,
+  dm = model.MultiTaskedDM(pnn=pnn,
                 args=args)
 
 

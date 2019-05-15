@@ -330,12 +330,12 @@ elif args.multitask_model:
   if args.load_nlu: 
     nlu.load('model/nlu_17')
 
-  pnn = model.PolicySmall(hidden_size=args.hid_size,
+  pnn = model.PolicyBig(hidden_size=args.hid_size,
                           db_size=args.db_size,
                           bs_size=args.bs_size,
                           da_size=args.da_size)
-  dm = model.DM(pnn=pnn,
-                args=args)
+  dm = model.MultiTaskedDM(pnn=pnn,
+                           args=args)
   if args.load_dm:
     dm.load('model/dm_4')
 
@@ -458,7 +458,7 @@ for epoch in range(args.num_epochs):
     batch_indices = indices[batch*args.batch_size:(batch+1)*args.batch_size]
     batch_rows = [train[i] for i in batch_indices]
 
-    if args.multitask_model:
+    if args.multitask_model or args.structured_fusion:
       ## Train NLU
       #input_seq, input_lens, bs = nlu.prep_batch(batch_rows)
       #cum_loss += nlu.train(input_seq, input_lens, bs)

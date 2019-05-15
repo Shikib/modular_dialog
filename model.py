@@ -230,7 +230,7 @@ class Policy(nn.Module):
     self.proj_da = nn.Linear(da_size, hidden_size)
 
   def forward(self, hidden, db, bs, da):
-    output = self.proj_hid(hidden[0]) + self.proj_db(db) + self.proj_bs(bs) :+ self.proj_da(da)
+    output = self.proj_hid(hidden[0]) + self.proj_db(db) + self.proj_bs(bs) #+ self.proj_da(da)
     return (F.tanh(output), hidden[1])
 
 class PNN(nn.Module):
@@ -1799,6 +1799,67 @@ class DM(nn.Module):
   def load(self, name):
     self.load_state_dict(torch.load(name+'.dm').state_dict())
 
+class MultiTaskedDM(nn.Module):
+  def __init__(self, pnn, args):
+    super(MultiTaskedDM, self).__init__() 
+
+    # Model
+    self.bs_in = nn.Linear(args.bs_size, args.hid_size)
+    self.pnn = pnn
+    self.da_out = nn.Linear(args.hid_size, args.da_size)
+
+    # Training
+    self.criterion = nn.BCEWithLogitsLoss(reduce=True, pos_weight=torch.Tensor([10.0]))
+    self.optim = optim.Adam(lr=args.lr, params=self.parameters(), weight_decay=args.l2_norm)
+    self.args = args
+
+  def prep_batch(self, rows):
+    if self.args.use_cuda is True:
+      bs = torch.cuda.FloatTensor([[int(e) for e in row[3]] for row in rows])
+      da = torch.cuda.FloatTensor([[int(e) for e in row[4]] for row in rows])
+      db = torch.cuda.FloatTensor([[int(e) for e in row[2]] for row in rows])
+    else:
+      bs = torch.FloatTensor([[int(e) for e in row[3]] for row in rows])
+      da = torch.FloatTensor([[int(e) for e in row[4]] for row in rows])
+      db = torch.FloatTensor([[int(e) for e in row[2]] for row in rows])
+
+    return bs, da, db
+
+  def forward(self, bs, db):
+    hid = F.relu(self.bs_in(bs))
+    da_hid = self.pnn(hid, db)
+    da_pred = self.da_out(da_hid)
+    return da_pred
+
+  def train(self, bs, da, db, no_prop=False):
+    self.optim.zero_grad()
+
+    # Forward
+    logits = self.forward(bs, db)
+
+    # Loss
+    loss = self.criterion(logits, da)
+    if no_prop:
+      return loss
+
+    # Backwards
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(self.parameters(), self.args.clip)
+    self.optim.step()
+
+    return loss.item()
+
+  def predict(self, bs, db):
+    out_logits = self.forward(bs, db)
+    out_probs = F.sigmoid(out_logits)
+    return out_probs >= 0.5
+
+  def save(self, name):
+    torch.save(self, name+'.dm')
+
+  def load(self, name):
+    self.load_state_dict(torch.load(name+'.dm').state_dict())
+
 class NLG(nn.Module):
   def __init__(self, decoder, output_w2i, args):
     super(NLG, self).__init__()
@@ -2000,7 +2061,7 @@ class E2E(nn.Module):
     pre_hidden = encoder_hidden
 
     # Policy network
-    decoder_hidden = (self.pnn(encoder_hidden[0], db, bs), encoder_hidden[1].cuda())
+    decoder_hidden = (self.pnn(encoder_hidden[0], db), encoder_hidden[1].cuda())
     encoder_hidden = decoder_hidden
 
     # Decoder
@@ -2050,7 +2111,7 @@ class E2E(nn.Module):
       encoder_outputs, encoder_hidden = self.encoder(input_seq, input_lens)
 
       # Policy network
-      decoder_hidden = (self.pnn(encoder_hidden[0], db, bs), encoder_hidden[1].cuda())
+      decoder_hidden = (self.pnn(encoder_hidden[0], db), encoder_hidden[1].cuda())
       encoder_hidden = decoder_hidden
       # Decoder
       if self.args.use_cuda is True:
@@ -2362,6 +2423,20 @@ class MultiTask(nn.Module):
     self.optim.step()
 
     return comb_loss.item()
+
+  def save(self, name):
+    torch.save(self, name+'.mt')
+
+  def load(self, name):
+    self.load_state_dict(torch.load(name+'.mt').state_dict())
+
+  def prep_batch(self, batch_rows):
+    target_seq, target_lens, db, da, bs = self.nlg.prep_batch(batch_rows)
+    input_seq, input_lens, target_seq, target_lens, db, bs = self.e2e.prep_batch(batch_rows)
+    return input_seq, input_lens, target_seq, target_lens, db, bs, da
+
+  def decode(self, input_seq, input_lens, max_len, db, bs, da):
+    return self.e2e.decode(input_seq, input_lens, max_len, db, bs)
 
 class MultiTaskFusion(nn.Module):
   def __init__(self, nlu, dm, nlg, encoder, pnn, decoder, cf_dec, input_w2i, output_w2i, args):
